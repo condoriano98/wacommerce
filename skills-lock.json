@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "skills": {
+    "agent-browser": {
+      "source": "vercel-labs/agent-browser",
+      "sourceType": "github",
+      "skillPath": "skills/agent-browser/SKILL.md",
+      "computedHash": "60a9cbe5af176150582c019e16e5d3703a41bb02d88438e881349876120d7944"
+    },
+    "break-even-calc": {
+      "source": "openaccountant/skills",
+      "sourceType": "github",
+      "skillPath": "business/break-even-calc/SKILL.md",
+      "computedHash": "b8f0db4eed25c3e7fdde42ce58e25fc6dedd1251d98bcf3e025b0e4ffb37230e"
+    },
+    "cash-flow-forecast": {
+      "source": "openaccountant/skills",
+      "sourceType": "github",
+      "skillPath": "business/cash-flow-forecast/SKILL.md",
+      "computedHash": "39afefcf5cd0b8f0b838159870857156a2497538efa4af2fe3f3036d187fa97c"
+    },
+    "fastapi": {
+      "source": "fastapi/fastapi",
+      "ref": "master",
+      "sourceType": "github",
+      "skillPath": "fastapi/.agents/skills/fastapi/SKILL.md",
+      "computedHash": "7ca975c93b0a2f93eb5337e93dde4cf70ec24fcb154f28c388a087ce9b1e033b"
+    },
+    "pricing-optimizer": {
+      "source": "openaccountant/skills",
+      "sourceType": "github",
+      "skillPath": "business/pricing-optimizer/SKILL.md",
+      "computedHash": "287069388d62afde6bf3d342fa8fc5957d27a376eeecadc45674fe107e69ec27"
+    },
+    "profit-loss": {
+      "source": "openaccountant/skills",
+      "sourceType": "github",
+      "skillPath": "business/profit-loss/SKILL.md",
+      "computedHash": "a2c23679b314efa3f13221724ce4ea82a04d0f26de9079d7847cfdb3610c6473"
+    },
+    "whatsapp-cloud-api": {
+      "source": "bellopushon/whatsapp-cloud-api",
+      "sourceType": "github",
+      "skillPath": "skills/whatsapp-cloud-api/SKILL.md",
+      "computedHash": "a22ad0aa051ec4906d9de042cddeeb1fa9c9b71e2db63b8307feb30a3861f28c"
+    }
+  }
+}
