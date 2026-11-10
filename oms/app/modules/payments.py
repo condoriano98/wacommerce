@@ -7,6 +7,7 @@ Release before the bank match only under an approved per-portfolio "release on a
 """
 
 import hashlib
+import re
 import uuid
 from datetime import date
 from decimal import Decimal
@@ -198,21 +199,60 @@ def import_bank_statement(session: Session, principal: Principal, bank_account_i
     return n
 
 
+_SEP = r"[-_/.:]"
+
+
+def contains_ref(reference: str | None, key: str | None) -> bool:
+    """Whole-reference match after normalisation (round 2): ``key`` must appear in ``reference`` as a complete token,
+    so ``PO-1`` never matches ``PO-10`` or ``PO-1-2`` and ``BCA-77`` never matches ``BCA-777``."""
+    if not reference or not key or not key.strip():
+        return False
+    k = re.escape(key.strip().upper())
+    pattern = rf"(?<![A-Z0-9])(?<![A-Z0-9]{_SEP}){k}(?![A-Z0-9])(?!{_SEP}[A-Z0-9])"
+    return re.search(pattern, reference.upper()) is not None
+
+
 def match_bank_lines(session: Session, principal: Principal) -> int:
-    """Match unmatched bank credits to attested/reported manual payments by reference and exact amount."""
+    """Match unmatched bank credits to reported/attested manual transfers (round 2, P0-2).
+
+    A line can settle a payment only if: same organization; the bank account belongs to the **order's legal entity**
+    (``posting.entity_for_order``); exact amount; the payment reference, order number or attested bank reference
+    appears as a whole token in the line's reference. Exactly one candidate is required — several open a
+    ``payment_mismatch`` case and nothing is matched. Lines are locked (``FOR UPDATE SKIP LOCKED``) and payments are
+    re-checked under lock, so concurrent runs recognise the cash once."""
+    from app.models.org import BankAccount
+
     principal.require("finance.manage")
     matched = 0
-    lines = session.scalars(select(BankStatementLine).where(BankStatementLine.matched_id.is_(None),
-                                                            BankStatementLine.amount > 0)).all()
+    lines = session.scalars(select(BankStatementLine).where(
+        BankStatementLine.organization_id == principal.org_id, BankStatementLine.matched_id.is_(None),
+        BankStatementLine.amount > 0).order_by(BankStatementLine.booked_at, BankStatementLine.id)
+        .with_for_update(skip_locked=True)).all()
     for line in lines:
-        ref = (line.reference or "").upper()
-        cands = session.scalars(select(Payment).where(Payment.provider == "manual",
-                                                      Payment.status.in_(("reported", "attested")),
-                                                      Payment.amount == line.amount)).all()
-        hit = next((p for p in cands if p.provider_ref.upper() in ref or
-                    (p.evidence.get("bank_reference") or "~").upper() in ref or
-                    session.get(Order, p.order_id).order_number.upper() in ref), None)
-        if hit is None:
+        ba = session.get(BankAccount, line.bank_account_id)
+        if ba is None or ba.organization_id != line.organization_id or ba.legal_entity_id is None:
+            continue
+        cands = session.scalars(select(Payment).where(
+            Payment.organization_id == line.organization_id, Payment.provider == "manual",
+            Payment.status.in_(("reported", "attested")), Payment.amount == line.amount)
+            .order_by(Payment.id)).all()
+        fits = []
+        for p in cands:
+            order = session.get(Order, p.order_id)
+            if posting.entity_for_order(session, order) != ba.legal_entity_id:
+                continue  # bank evidence of another legal entity can never settle this order
+            if contains_ref(line.reference, p.provider_ref) or contains_ref(line.reference, order.order_number) \
+                    or contains_ref(line.reference, (p.evidence or {}).get("bank_reference")):
+                fits.append(p)
+        if len(fits) > 1:
+            exceptions.open_case(session, line.organization_id, "payment_mismatch", subject_type="bank_statement_line",
+                                 subject_id=str(line.id), context={"reason": "several manual payments fit this line",
+                                                                   "candidates": [str(p.id) for p in fits]})
+            continue
+        if not fits:
+            continue
+        hit = session.get(Payment, fits[0].id, with_for_update=True)
+        if hit.status not in ("reported", "attested"):  # matched meanwhile by another run
             continue
         order = session.get(Order, hit.order_id, with_for_update=True)
         _transition(session, hit, "bank_matched", principal.user_id, bank_line=str(line.id))
