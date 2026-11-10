@@ -11,16 +11,23 @@ PG_ADMIN = os.environ.get("OMS_TEST_PG_ADMIN", "postgresql+psycopg://postgres@lo
 TEST_DB = os.environ.get("OMS_TEST_DB", "oms_test")
 os.environ["OMS_DATABASE_URL"] = f"postgresql+psycopg://oms_app:oms_app@localhost:5432/{TEST_DB}"
 os.environ["OMS_SYSTEM_DATABASE_URL"] = f"postgresql+psycopg://oms_system:oms_system@localhost:5432/{TEST_DB}"
+os.environ["OMS_WORKER_DATABASE_URL"] = f"postgresql+psycopg://oms_worker:oms_worker@localhost:5432/{TEST_DB}"
+os.environ["OMS_WEBHOOK_DATABASE_URL"] = f"postgresql+psycopg://oms_webhook:oms_webhook@localhost:5432/{TEST_DB}"
+os.environ.setdefault("OMS_DB_ROLE_MODE", "v31")
 os.environ["OMS_MIGRATION_DATABASE_URL"] = f"{PG_ADMIN}/{TEST_DB}"
 os.environ["OMS_JWT_SECRET"] = "test-secret"
+os.environ.setdefault("OMS_BITESHIP_WEBHOOK_TOKEN", "test-biteship-token")
+
+from contextlib import contextmanager  # noqa: E402
 
 from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402
 from sqlalchemy import create_engine, text  # noqa: E402
+from sqlalchemy.orm import sessionmaker  # noqa: E402
 
-from app.core.db import system_session  # noqa: E402
 from app.core.security import hash_password, issue_token  # noqa: E402
-from app.models.org import Brand, Organization, Portfolio, RoleAssignment, User  # noqa: E402
+from app.models.customers import IdentityDomain  # noqa: E402
+from app.models.org import Brand, LegalEntity, Organization, Portfolio, RoleAssignment, User  # noqa: E402
 from app.modules.org import seed_org_defaults  # noqa: E402
 
 
@@ -35,16 +42,39 @@ def database():
     cfg.attributes["url"] = f"{PG_ADMIN}/{TEST_DB}"
     command.upgrade(cfg, "head")
     with admin.connect() as c:  # deployment step: give the NOLOGIN roles credentials
-        c.execute(text("alter role oms_app login password 'oms_app'"))
-        c.execute(text("alter role oms_system login password 'oms_system'"))
+        for role in ("oms_app", "oms_system", "oms_worker", "oms_webhook"):
+            c.execute(text(f"alter role {role} login password '{role}'"))
     yield
     admin.dispose()
+
+
+_OWNER = None
+
+
+@contextmanager
+def owner_session():
+    """Provisioning/test-seeding connection (schema owner). Never used by application code paths."""
+    global _OWNER
+    if _OWNER is None:
+        _OWNER = create_engine(f"{PG_ADMIN}/{TEST_DB}")
+    s = sessionmaker(bind=_OWNER, expire_on_commit=False)()
+    try:
+        s.begin()
+        yield s
+        s.commit()
+    except Exception:
+        s.rollback()
+        raise
+    finally:
+        s.close()
 
 
 @dataclass
 class Tenant:
     org_id: uuid.UUID
     brand_id: uuid.UUID
+    legal_entity_id: uuid.UUID = None
+    identity_domain_id: uuid.UUID = None
     portfolios: dict[str, uuid.UUID] = field(default_factory=dict)
     users: dict[str, uuid.UUID] = field(default_factory=dict)
 
@@ -69,14 +99,26 @@ def make_tenant(portfolio_codes=("A", "B", "C"), users: dict | None = None) -> T
         "ai": [("ai_sales_agent", "A"), ("ai_sales_agent", "B")],
     }
     suffix = uuid.uuid4().hex[:8]
-    with system_session() as s:
+    with owner_session() as s:
         org = Organization(name=f"Org {suffix}")
         s.add(org)
         s.flush()
-        brand = Brand(organization_id=org.id, name="Main brand")
+        le = LegalEntity(organization_id=org.id, name=f"PT Test {suffix}")
+        s.add(le)
+        s.flush()
+        brand = Brand(organization_id=org.id, name="Main brand", legal_entity_id=le.id)
         s.add(brand)
         s.flush()
-        t = Tenant(org_id=org.id, brand_id=brand.id)
+        dom = IdentityDomain(organization_id=org.id, kind="meta_business", scope_ref=str(brand.id), brand_id=brand.id)
+        s.add(dom)
+        system = User(organization_id=org.id, email=f"system+{suffix}@oms.internal", name="system", password_hash=None,
+                      is_service=True)
+        s.add(system)
+        s.flush()
+        s.add(RoleAssignment(organization_id=org.id, user_id=system.id, role="system_worker", scope_type="organization",
+                             scope_id=None))
+        t = Tenant(org_id=org.id, brand_id=brand.id, legal_entity_id=le.id, identity_domain_id=dom.id)
+        t.users["system"] = system.id
         for code in portfolio_codes:
             p = Portfolio(organization_id=org.id, brand_id=brand.id, code=code, name=f"Portfolio {code}",
                           approved_channels=[], approved_procurement_sources=[])

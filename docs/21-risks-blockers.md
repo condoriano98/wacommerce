@@ -1,13 +1,14 @@
 # 21 — Open Risks & Verification Gates
 
-> Source of truth: `docs/00-plan.md` (V3.1, approved 2026-11-10). This file is the topic view of the listed sections.
+> Source of truth: `docs/00-plan.md` (canonical V3.1 specification incl. §27 normative corrections). This file is a topic view.
 
 
 ## 25. Open risks and verification gates
 
 Gates (owner → due M0 unless noted): **G-DOKU** DOKU product/signature/notification/status APIs · **G-BS1–3** Biteship
 COD remittance reporting, webhook auth, billing model · **G-CW1** Chatwoot API-channel callback semantics and echo fields
-· **G-PROC** Procrastinate sync worker/periodic/lock features · **G-MB1** Metabase OSS row-level access · **G-ACC1**
+· **G-PROC** Procrastinate sync worker/periodic/lock features · **G-MB1** DB-role reporting identity (`session_user`); PostgreSQL isolation
+tests pass locally (M1), Metabase instance configuration not yet verified · **G-BS4** Biteship lookup-by-reference_id · **G-ACC1**
 accounting framework (SAK EP vs EMKM) and revenue trigger confirmation by accountant · **G-TAX1** PKP/PPN/PPh 22
 treatment · **G-TAX2** record retention period · **G-BANK1** bank statement CSV formats · **G-OPS1** Sumopod PITR ·
 **G-OPS2** Sumopod Postgres role privileges (non-superuser roles, definer functions) · Meta: Indonesia hashed fallback,
@@ -16,3 +17,8 @@ Risks: marketplace account bans (mitigated: no automation); provider version chu
 financial misstatement from mis-set triggers (fixtures + accountant sign-off); Chatwoot/n8n operational load on Sumopod;
 single-founder approval bottleneck (approver ≠ requester requires ≥2 approvers — needs a second authorised person or a
 delegated approver policy **G-GOV1**).
+
+**G-ADS1** (added 2026-11-10, M4 review): before live Meta/Google/TikTok spend imports — confirm each ad account's
+billing currency, an FX conversion policy for non-IDR accounts (rate source, date, rounding, gains/losses), the
+ad-account → legal-entity mapping, and the period-close treatment of late revisions. Until then non-IDR rows are rejected
+and accounts without an explicit legal entity cannot import spend.

@@ -12,7 +12,7 @@ from app.core.security import issue_token, verify_password
 from app.models.governance import AuditLog, HumanApproval
 from app.models.org import Portfolio, RiskPolicy
 from app.models.platforms import PlatformAccount
-from app.modules import approvals, org, platforms
+from app.modules import approvals, capital, org, platforms
 
 router = APIRouter()
 
@@ -96,20 +96,35 @@ def override_threshold(policy_id: uuid.UUID, body: ThresholdIn, session: DbSessi
 class CapitalIn(BaseModel):
     from_portfolio_id: uuid.UUID | None = None
     to_portfolio_id: uuid.UUID
+    category: str = "advertising"
     amount: Decimal
     reason: str
 
 
 @router.post("/capital/reallocations", tags=["capital"], status_code=201)
 def request_reallocation(body: CapitalIn, session: DbSession, principal: CurrentPrincipal) -> dict:
-    a = org.request_capital_reallocation(session, principal, **body.model_dump())
+    a = capital.request_reallocation(session, principal, **body.model_dump())
     return {"approval_id": str(a.id), "status": a.status}
 
 
 @router.post("/capital/reallocations/{approval_id}/execute", tags=["capital"])
 def execute_reallocation(approval_id: uuid.UUID, session: DbSession, principal: CurrentPrincipal) -> dict:
-    alloc = org.execute_capital_reallocation(session, principal, approval_id)
-    return {"allocation_id": str(alloc.id), "journal_id": str(alloc.journal_id)}
+    """Changes capital mandates only — never creates bank/cash journals (spec §10, acceptance #16)."""
+    evs = capital.execute_reallocation(session, principal, approval_id)
+    return {"events": [str(e.id) for e in evs]}
+
+
+class MandateIn(BaseModel):
+    category: str
+    amount: Decimal
+    effective_from: date
+    reason: str
+
+
+@router.put("/portfolios/{portfolio_id}/mandates", tags=["capital"])
+def set_mandate(portfolio_id: uuid.UUID, body: MandateIn, session: DbSession, principal: CurrentPrincipal) -> dict:
+    ev = capital.set_mandate(session, principal, portfolio_id, **body.model_dump())
+    return {"event_id": str(ev.id), "available": str(capital.available(session, portfolio_id, body.category))}
 
 
 class DecisionIn(BaseModel):
@@ -121,7 +136,7 @@ class DecisionIn(BaseModel):
 def list_approvals(session: DbSession, principal: CurrentPrincipal, status_filter: str = "pending") -> list[dict]:
     rows = session.scalars(select(HumanApproval).where(HumanApproval.status == status_filter)
                            .order_by(HumanApproval.created_at)).all()
-    return [{"id": str(a.id), "kind": a.kind, "subject": f"{a.subject_type}:{a.subject_id}",
+    return [{"id": str(a.id), "kind": a.kind, "status": a.status, "subject": f"{a.subject_type}:{a.subject_id}",
              "amount": str(a.amount) if a.amount is not None else None, "payload": a.payload,
              "requested_by": str(a.requested_by), "portfolio_id": str(a.portfolio_id) if a.portfolio_id else None}
             for a in rows]

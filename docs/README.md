@@ -1,6 +1,6 @@
 # Wacommerce documentation (V3.1)
 
-Master plan: [`00-plan.md`](00-plan.md) — approved 2026-11-10. Topic files below are views of it; on any conflict the
+Canonical specification: [`00-plan.md`](00-plan.md) (incl. §27 normative corrections). Procedure: [`29-execution-playbook.md`](29-execution-playbook.md). Topic files below are views of it; on any conflict the
 master plan wins, and superseded statements are listed in [`23-contradiction-register.md`](23-contradiction-register.md).
 
 | File | Topic | Status |
@@ -30,6 +30,10 @@ master plan wins, and superseded statements are listed in [`23-contradiction-reg
 | [22-backlog.md](22-backlog.md) | P0/P1/P2 backlog | V3.1 |
 | [23-contradiction-register.md](23-contradiction-register.md) | Superseded V3.0 statements | V3.1 |
 | [24-v31-delta-and-summary.md](24-v31-delta-and-summary.md) | V3.0→V3.1 delta, executive summary, code impact | V3.1 |
+| [25-m5-readiness-and-release-gates.md](25-m5-readiness-and-release-gates.md) | M5 readiness audit & release gates (PR #1) | NO-GO until evidence |
+| [26-m5-controlled-deployment-runbook.md](26-m5-controlled-deployment-runbook.md) | Controlled deployment & recovery runbook (PR #1) | Draft, not executed |
+| [27-implementation-status.md](27-implementation-status.md) | Implementation status per milestone (SHAs, CI, tests) | Live |
+| [29-execution-playbook.md](29-execution-playbook.md) | Execution playbook (procedure only) | V3.1 |
 
 Implementation state: V3.0 foundation and commerce core are implemented and tested (21 tests). They are the regression
 baseline and get refactored in M1 per `24-v31-delta-and-summary.md`. WhatsApp/Chatwoot code is committed WIP.

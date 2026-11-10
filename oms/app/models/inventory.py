@@ -13,6 +13,7 @@ class Warehouse(OrgMixin, Base):
 
     __tablename__ = "warehouses"
     name: Mapped[str]
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("legal_entities.id"))
     city: Mapped[str]
     postal_code: Mapped[str]
     address: Mapped[str]
@@ -25,6 +26,7 @@ class InventoryBalance(OrgMixin, Base):
     __tablename__ = "inventory_balances"
     __table_args__ = (
         UniqueConstraint("portfolio_id", "sku_id", "warehouse_id"),
+        CheckConstraint("in_transit >= 0", name="in_transit_nonneg"),
         CheckConstraint("on_hand >= 0", name="on_hand_nonneg"),
         CheckConstraint("reserved >= 0", name="reserved_nonneg"),
         CheckConstraint("reserved <= on_hand", name="no_oversell"),
@@ -32,8 +34,11 @@ class InventoryBalance(OrgMixin, Base):
     portfolio_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portfolios.id"), index=True)
     sku_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("skus.id"), index=True)
     warehouse_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("warehouses.id"))
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("legal_entities.id"))
     on_hand: Mapped[int] = mapped_column(default=0)
     reserved: Mapped[int] = mapped_column(default=0)
+    # Goods picked by the carrier but not yet delivered: valued in GL account 1250 (spec §9 policy 4).
+    in_transit: Mapped[int] = mapped_column(default=0)
     # Moving-average unit cost (documented valuation method; FIFO layers are a backlog item).
     avg_unit_cost: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=Decimal("0"))
 
@@ -66,3 +71,35 @@ class InventoryReservation(OrgMixin, Base):
     qty: Mapped[int]
     status: Mapped[str] = mapped_column(default="active")
     expires_at: Mapped[datetime | None]
+
+
+class StockCount(OrgMixin, Base):
+    __tablename__ = "stock_counts"
+    warehouse_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("warehouses.id"))
+    counted_by: Mapped[uuid.UUID]
+    status: Mapped[str] = mapped_column(default="open")  # open | posted
+
+
+class StockCountLine(OrgMixin, Base):
+    __tablename__ = "stock_count_lines"
+    portfolio_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portfolios.id"), index=True)
+    stock_count_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("stock_counts.id"), index=True)
+    balance_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("inventory_balances.id"))
+    system_qty: Mapped[int]
+    counted_qty: Mapped[int]
+
+
+class ShipmentCostAllocation(OrgMixin, Base):
+    """Exact quantity and cost consumed from one inventory balance for one shipment line (remediation B2)."""
+
+    __tablename__ = "shipment_cost_allocations"
+    portfolio_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portfolios.id"), index=True)
+    shipment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("shipments.id"), index=True)
+    shipment_item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("shipment_items.id"), index=True)
+    order_item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("order_items.id"), index=True)
+    balance_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("inventory_balances.id"))
+    warehouse_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("warehouses.id"))
+    qty: Mapped[int]
+    unit_cost: Mapped[Decimal] = mapped_column(Numeric(18, 4))
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    status: Mapped[str] = mapped_column(default="in_transit")  # in_transit | delivered | returned

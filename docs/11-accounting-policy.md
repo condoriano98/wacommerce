@@ -1,9 +1,8 @@
 # 11 — Accounting Policy & Journal Mappings
 
-> Source: `docs/00-plan.md` §9 (ADR-008). Gates: **G-ACC1** (framework: SAK EP vs SAK EMKM, revenue trigger sign-off by
-> the company accountant) and **G-TAX1** (PKP/PPN, PPh 22). Defaults below are configurable per legal entity and
-> versioned per posting rule.
+> Source of truth: `docs/00-plan.md` (canonical V3.1 specification incl. §27 normative corrections). This file is a topic view.
 
+## 9. Accounting policy and journal mappings (revised — P0.1)
 
 Framework: **G-ACC1** confirm with the company's accountant — SAK EP (private entities, effective 2025) or SAK EMKM;
 principles below follow IFRS 15/PSAK 72-consistent control-transfer logic and are configurable per legal entity.
@@ -32,12 +31,14 @@ Policies:
 
 Chart of accounts (renumbered; contract liability moved to the liability range):
 1000 Bank · 1010 Gateway receivable (DOKU) · 1020 Carrier balance (Biteship) · 1030 Prepaid ad balances · 1100 COD
-receivable · 1110 Marketplace receivable · 1120 Supplier refund receivable · 1200 Inventory · 1250 Goods in transit ·
+receivable · 1105 Customer receivable – transfer pending verification · 1109 Allowance for expected credit losses ·
+1110 Marketplace receivable · 1120 Supplier refund receivable · 1200 Inventory · 1250 Goods in transit ·
 1210 Supplier prepayments · 1400 Prepaid taxes (PPh 22 creditable) · 1900 Intercompany receivable · 2000 Supplier
 payables · 2010 Carrier payables · 2020 Ads payables · 2100 Refunds payable · 2200 Contract liabilities (customer
 advances) · 2300 Taxes payable · 2900 Intercompany payable · 3000 Owner capital · 3900 Retained earnings · 4000 Sales
 revenue · 4100 Shipping income · 4900 Sales returns & allowances · 5000 COGS · 5100 Shipping expense · 5200 Payment &
 COD fees · 5300 Marketplace fees · 5400 Packing · 5500 Return & failed-delivery losses · 5600 Variable AI/CS cost ·
+5700 Expected credit losses (net of recoveries) ·
 6000 Advertising · 6900 Operating expenses.
 
 Journal fixtures (executable test data at Milestone 1; amounts IDR):
@@ -48,8 +49,11 @@ Journal fixtures (executable test data at Milestone 1; amounts IDR):
 - **F2 COD**, goods 150,000 + shipping 15,000, COD fee 4,950, carrier-deducted shipping 12,000: pickup Dr1250/Cr1200 ·
   delivery Dr1100 165,000/Cr4000 150,000/Cr4100 15,000; Dr5000/Cr1250; Dr5200 4,950/Cr1100 4,950; Dr5100 12,000/
   Cr1100 12,000 · remittance Dr1020 148,050/Cr1100 148,050 · withdrawal Dr1000/Cr1020 (less withdrawal fee → 5200).
-- **F3 Manual transfer**: reported (no journal) → attested with bank ref Dr1000/Cr2200 (bank_matched later confirms) →
-  delivery as F1.
+- **F3a Manual transfer, bank match before delivery** (default policy): reported (no journal) → attested (no journal)
+  → bank line matched Dr1000 115,000/Cr2200 115,000 → delivery Dr2200/Cr4000 100,000/Cr4100 15,000.
+- **F3b Manual transfer, release on attestation** (approved policy): reported/attested (no journal) → delivery
+  Dr1105 115,000/Cr4000 100,000/Cr4100 15,000 → bank match Dr1000/Cr1105; if unmatched past SLA: Dr5700/Cr1109
+  allowance (write-off Dr1109/Cr1105 only with approval).
 - **F4 Marketplace**, 240,000, expected fee 19,200, actual 20,000, PPh 22 1,200: delivery Dr1110 240,000/Cr4000;
   Dr5300 19,200/Cr1110 · settlement Dr1000 218,800/Dr5300 800/Dr1400 1,200/Cr1110 220,800.
 - **F5 Dropship**, prepaid 165,000, supplier 100,000: capture Dr1010/Cr2200 · purchase Dr1210 100,000/Cr1000 ·
@@ -67,17 +71,35 @@ Journal fixtures (executable test data at Milestone 1; amounts IDR):
 Invariants: every journal balances (deferred trigger); stock subledger value = 1200 + 1250 per (legal entity, portfolio);
 contract liabilities = Σ prepaid undelivered order value; COD/marketplace receivables = Σ open expected settlements.
 
+## Remediation amendments (2026-11-10, pending accountant confirmation — G-ACC1)
+
+- **Verified cash (B5).** Provider-reported payouts (gateway disbursement, carrier withdrawal, marketplace payout,
+  supplier refund, COD remitted to bank) are booked to **1050 Funds in transit to bank (unverified payouts)**. Only a
+  bank statement line of the same legal entity, carrying the payout reference and the exact amount, moves the amount
+  to **1000** (`bank_receipt`, in the original portfolio/order dimensions). 1050 is never opening cash in forecasts.
+- **Manual-transfer application order (B1).** A bank-matched transfer clears, per line: (1) the open recognised
+  receivable 1105 (capped at its balance), (2) amounts written off and not yet recovered (Cr 5700), (3) the rest as a
+  customer advance 2200 for the undelivered part, pro rata to each line's undelivered charge.
+- **Inventory cost (B2).** Goods in transit and COGS carry the exact cost consumed from each warehouse balance at
+  pickup (`shipment_cost_allocations`); failed delivery restores that cost to the same balance (moving average
+  re-computed); after-delivery returns use the delivered cost.
+- **COD (B3).** Collectible per shipment = its share of each line's goods and shipping (split by quantity); a failed
+  COD delivery reclassifies the carrier cost accrued against 1100 to 2010.
+- **Marketplace settlement (B4).** Fees, withheld tax and payout are allocated to order items by item gross; fee
+  true-up per item against its own accrual; each portfolio's 1110 clears.
+- **Posting identity (A2).** One journal per (organization, source_type, source_id), enforced by the database.
+
+## Round 2 amendments (2026-11-10, pending accountant confirmation — G-ACC1)
+
+- **2400 Unapplied settlement receipts (suspense)** — liability for money a provider paid that no open receivable
+  explains (duplicate payout under a new id, excess payout, duplicate COD remittance). Never used to clear a
+  receivable; always accompanied by a case; released only by a human decision (refund to the provider or recognition).
+- **Partial marketplace payouts** release the accrued expected fee pro rata to the gross they cover; the fee true-up is
+  booked per payout.
+- **Accepted settlement variance** (approval): Dr 5300 marketplace fees/claims / Cr 1110 for the receivable the
+  provider will not pay.
 
 ## Executable fixtures
-`docs/fixtures/journals.yaml` encodes F1–F12 line by line. Verified on 2026-11-10: every journal balances; after each
-scenario completes, contract liabilities (2200), goods in transit (1250) and settlement receivables (1010/1100/1110/1020)
-net to zero, so revenue never waits on cash and cash never inflates revenue. F8 intentionally leaves the refund payable
-(2100) open until the refund is paid. In M1 the posting rules must reproduce these lines exactly (fixture-driven tests).
-
-## Separation of measures
-| Measure | Built from | Never includes |
-|---|---|---|
-| Accounting profit | P&L accounts 4xxx–6xxx in the period | settlement timing, mandates |
-| Cash position | 1000 (+ 1010/1020 clearing shown separately) | receivables, mandates |
-| Working capital | 1100/1110/1120/1200/1210/1250 − 2000/2010/2020/2200 | cash, equity |
-| Capital mandates & commitments | management ledger (`10-…`, §10) | GL balances |
+`docs/fixtures/journals.yaml` encodes F1–F13 (F3a/F3b split; F13 credit losses). The YAML balance check is a sanity
+test only; acceptance test #19 executes the real OMS services against PostgreSQL and compares the produced ledger lines
+to these fixtures (§27.10).

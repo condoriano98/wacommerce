@@ -56,6 +56,19 @@ PLAYBOOKS: dict[str, Playbook] = {
     "duplicate_order": Playbook("medium", "cs_admin", 8, ("merge", "keep_both", "cancel_duplicate"), {}, None),
     "oversold_marketplace": Playbook("critical", "portfolio_manager", 2, ("source_from_supplier", "cancel_on_platform"),
                                      {"source_from_supplier": "procurement_purchase"}, None),
+    # ADR-015: an external side effect whose outcome is unknown and cannot be looked up (e.g. Biteship booking after a
+    # timeout). A human checks the provider dashboard; the OMS never re-sends automatically.
+    "external_uncertain": Playbook("high", "finance_manager", 4, ("confirm_effect", "confirm_absent_and_retry"), {}, None),
+    # M3 risk alerts (advisory; acceptance #18)
+    "liquidity_breach": Playbook("critical", "finance_manager", 24, ("reduce_ad_budget", "delay_inventory_buy",
+                                                                    "inject_capital", "accept_risk"),
+                                 {"inject_capital": "capital_reallocation"}, None),
+    "invariant_violation": Playbook("critical", "finance_manager", 4, ("investigate", "post_adjustment"),
+                                    {"post_adjustment": "ledger_adjustment"}, None),
+    "margin_breach": Playbook("high", "finance_manager", 72, ("reprice", "cut_channel", "accept_risk"), {}, None),
+    # Remediation B5: a provider reported a payout but no bank statement line has proven receipt yet.
+    "bank_unmatched": Playbook("high", "finance_manager", 72, ("chase_provider", "accept_variance"),
+                               {"accept_variance": "variance_acceptance"}, None),
     "manual_review": Playbook("medium", "portfolio_manager", 8, ("route_manually", "cancel_and_refund"),
                               {"cancel_and_refund": "refund"}, None),
 }

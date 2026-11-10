@@ -16,10 +16,18 @@ dependencies = [
     "pyjwt>=2.8",
     "argon2-cffi>=23.1",
     "python-multipart>=0.0.9",
+    "pyyaml>=6.0.3",
+    "procrastinate[psycopg]>=3.10.0",
 ]
 
 [dependency-groups]
-dev = ["pytest>=8.2", "ruff>=0.5"]
+dev = [
+    "hypothesis>=6.170.15",
+    "pytest>=8.2",
+    "pyyaml>=6.0.3",
+    "respx>=0.23.1",
+    "ruff>=0.5",
+]
 
 [tool.fastapi]
 entrypoint = "app.main:app"
@@ -29,7 +37,7 @@ testpaths = ["tests"]
 addopts = "-q"
 
 [tool.ruff]
-line-length = 120
+line-length = 130
 target-version = "py312"
 
 [tool.ruff.lint]

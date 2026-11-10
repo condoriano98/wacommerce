@@ -1,0 +1,3 @@
+{"order_sn": "2611100ABCDE", "order_status": "READY_TO_SHIP", "update_time": 1793000000, "total_amount": 255000,
+ "estimated_shipping_fee": 15000,
+ "item_list": [{"item_sku": "SHP-C1", "model_sku": "", "model_quantity_purchased": 2, "model_discounted_price": 120000}]}

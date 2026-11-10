@@ -7,6 +7,17 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base, OrgMixin
 
 
+class IdentityDomain(OrgMixin, Base):
+    """Scope in which an external identifier is unique (spec §5, D6): e.g. one Meta business (BSUIDs are
+    business-scoped) or one marketplace shop."""
+
+    __tablename__ = "identity_domains"
+    __table_args__ = (UniqueConstraint("organization_id", "kind", "scope_ref"),)
+    kind: Mapped[str]  # meta_business | marketplace_shop | email
+    scope_ref: Mapped[str]  # e.g. Meta business id / brand id / shop id
+    brand_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("brands.id"))
+
+
 class Customer(OrgMixin, Base):
     __tablename__ = "customers"
     brand_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("brands.id"))
@@ -27,6 +38,8 @@ class CustomerIdentity(OrgMixin, Base):
     )
     customer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("customers.id"), index=True)
     brand_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("brands.id"))
+    identity_domain_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("identity_domains.id"))
+    provider: Mapped[str | None]  # whatsapp | shopee | tiktokshop | lazada | email
     identity_type: Mapped[str]
     identity_value: Mapped[str]
     first_seen_at: Mapped[datetime | None]
@@ -108,6 +121,7 @@ class Message(OrgMixin, Base):
     customer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("customers.id"), index=True)
     direction: Mapped[str]  # inbound | outbound
     author: Mapped[str]  # customer | ai | human | system
+    origin: Mapped[str | None]  # meta | chatwoot | oms — where the message entered the system
     external_id: Mapped[str | None]  # wamid
     body: Mapped[str | None]
     payload: Mapped[dict] = mapped_column(default=dict)

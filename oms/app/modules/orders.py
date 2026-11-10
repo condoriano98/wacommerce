@@ -1,7 +1,7 @@
-"""Order state machine, creation from quotes, and marketplace order ingestion."""
+"""Orders (V3.1): line-level quantity pipeline, derived aggregate status, creation from quotes, cancellations and
+idempotent marketplace ingestion (spec §8, ADR-010)."""
 
 import uuid
-from collections.abc import Callable
 from decimal import Decimal
 
 from fastapi import HTTPException, status
@@ -9,74 +9,67 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.audit import audit
+from app.core.outbox import enqueue
 from app.models.base import utcnow
 from app.models.catalog import PlatformListing
 from app.models.customers import CustomerAttribution
+from app.models.governance import ExceptionCase
 from app.models.orders import Order, OrderEvent, OrderItem, Quote, QuoteLine
+from app.models.org import Portfolio
 from app.models.platforms import PlatformAccount
-from app.modules import inventory
+from app.modules import events, inventory
+from app.modules.finance import posting
 
-TRANSITIONS: dict[str, set[str]] = {
-    "placed": {"confirmed", "canceled", "exception"},
-    "confirmed": {"payment_pending", "cod_confirmed", "payment_verified", "canceled", "exception"},
-    "payment_pending": {"payment_verified", "canceled", "exception"},
-    "payment_verified": {"routed", "canceled", "exception"},
-    "cod_confirmed": {"routed", "canceled", "exception"},
-    "routed": {"reserved", "procurement_pending", "platform_fulfilling", "exception", "canceled"},
-    "reserved": {"packing", "canceled", "exception"},
-    "packing": {"packed", "exception"},
-    "packed": {"shipped", "exception"},
-    "procurement_pending": {"awaiting_approval", "exception", "canceled"},
-    "awaiting_approval": {"purchased", "procurement_pending", "exception", "canceled"},
-    "purchased": {"shipped", "exception"},
-    "platform_fulfilling": {"shipped", "delivered", "canceled", "exception"},
-    "shipped": {"delivered", "returned", "exception"},
-    "delivered": {"settled", "reconciled", "returned", "refunded"},
-    "settled": {"reconciled", "returned", "refunded"},
-    "reconciled": {"returned", "refunded"},
-    "exception": {"routed", "reserved", "packing", "procurement_pending", "awaiting_approval", "shipped", "delivered",
-                  "canceled", "returned", "refunded"},
-    "returned": {"refunded", "reconciled"},
-    "canceled": {"refunded"},
-    "refunded": set(),
-}
-
-# Hooks run inside the same transaction when an order enters a status (conversions, notifications...).
-OnEnter = Callable[[Session, Order, str | None, dict], None]
-ON_ENTER: dict[str, list[OnEnter]] = {}
+PREPAID_READY = {"captured", "bank_matched", "released"}
 
 
-def on_enter(*statuses: str) -> Callable[[OnEnter], OnEnter]:
-    def register(fn: OnEnter) -> OnEnter:
-        for s in statuses:
-            ON_ENTER.setdefault(s, []).append(fn)
-        return fn
-
-    return register
+def _event(session: Session, order: Order, to_status: str, *, actor_type: str = "system", actor_user_id=None,
+           reason: str | None = None, data: dict | None = None) -> None:
+    session.add(OrderEvent(organization_id=order.organization_id, order_id=order.id, from_status=order.status,
+                           to_status=to_status, actor_user_id=actor_user_id, actor_type=actor_type, reason=reason,
+                           data=data or {}))
 
 
-class InvalidTransition(HTTPException):
-    def __init__(self, frm: str, to: str):
-        super().__init__(status.HTTP_409_CONFLICT, f"order cannot move from {frm} to {to}")
+def items_of(session: Session, order_id) -> list[OrderItem]:
+    return list(session.scalars(select(OrderItem).where(OrderItem.order_id == order_id).order_by(OrderItem.created_at)))
 
 
-def transition(session: Session, order: Order, to: str, *, actor_user_id: uuid.UUID | None = None,
-               actor_type: str = "user", reason: str | None = None, data: dict | None = None) -> Order:
-    frm = order.status
-    if to not in TRANSITIONS.get(frm, set()):
-        raise InvalidTransition(frm, to)
-    order.status = to
-    order.version += 1
-    if to == "confirmed":
-        order.confirmed_at = utcnow()
-    if to == "delivered":
-        order.delivered_at = utcnow()
-    session.add(OrderEvent(organization_id=order.organization_id, order_id=order.id, from_status=frm, to_status=to,
-                           actor_user_id=actor_user_id, actor_type=actor_type, reason=reason, data=data or {}))
-    session.flush()
-    for hook in ON_ENTER.get(to, []):
-        hook(session, order, frm, data or {})
-    return order
+def derive_status(session: Session, order: Order) -> str:
+    """Aggregate order status is computed, never set directly (spec §8)."""
+    items = items_of(session, order.id)
+    live = [i for i in items if i.qty_canceled < i.qty]
+    open_case = session.scalars(select(ExceptionCase.id).where(
+        ExceptionCase.order_id == order.id, ExceptionCase.severity.in_(("high", "critical")),
+        ExceptionCase.status.not_in(("resolved", "written_off")))).first()
+    if not live:
+        new = "canceled"
+    elif open_case:
+        new = "exception"
+    else:
+        ordered = sum(i.qty - i.qty_canceled for i in live)
+        delivered = sum(i.qty_delivered for i in live)
+        returned = sum(i.qty_returned for i in live)
+        shipped = sum(i.qty_shipped for i in live)
+        allocated = sum(i.qty_allocated_owned + i.qty_allocated_dropship + i.qty_allocated_platform for i in live)
+        if returned and returned == delivered == ordered:
+            new = "returned"
+        elif returned:
+            new = "partially_returned"
+        elif delivered == ordered:
+            new = "closed" if order.settlement_status in ("matched", "adjusted", "closed") else "delivered"
+        elif delivered:
+            new = "partially_delivered"
+        elif shipped or allocated:
+            new = "in_fulfillment"
+        elif order.payment_method not in ("cod", "marketplace") and order.payment_status not in PREPAID_READY:
+            new = "awaiting_payment"
+        else:
+            new = "confirmed"
+    if new != order.status:
+        _event(session, order, new)
+        order.status = new
+        order.version += 1
+    return new
 
 
 def _order_number(prefix: str) -> str:
@@ -84,7 +77,6 @@ def _order_number(prefix: str) -> str:
 
 
 def freeze_attribution(session: Session, order: Order, lookback_days: int = 7) -> None:
-    """Latest touch within the lookback window at confirmation time; frozen on the order."""
     from datetime import timedelta
 
     if order.customer_id is None:
@@ -94,6 +86,11 @@ def freeze_attribution(session: Session, order: Order, lookback_days: int = 7) -
         CustomerAttribution.touched_at >= utcnow() - timedelta(days=lookback_days))
         .order_by(CustomerAttribution.touched_at.desc())).first()
     order.attribution_touch_id = touch.id if touch else None
+
+
+def request_routing(session: Session, order: Order) -> None:
+    enqueue(session, order.organization_id, "order.route", f"route:{order.id}:{order.version}",
+            {"order_id": str(order.id)})
 
 
 def accept_quote(session: Session, quote_id: uuid.UUID, shipping_address: dict, *, actor_type: str,
@@ -114,7 +111,8 @@ def accept_quote(session: Session, quote_id: uuid.UUID, shipping_address: dict, 
                   external_order_id=f"quote:{quote.id}", customer_id=quote.customer_id, quote_id=quote.id,
                   payment_method=quote.payment_method or "doku_link", subtotal=quote.subtotal,
                   discount_total=quote.discount_total, shipping_fee=quote.shipping_fee, total=quote.total,
-                  shipping_address=shipping_address, placed_at=utcnow())
+                  shipping_address=shipping_address, placed_at=utcnow(), status="placed",
+                  payment_status="cod" if quote.payment_method == "cod" else "unpaid", confirmed_at=utcnow())
     session.add(order)
     session.flush()
     for ln in lines:
@@ -123,59 +121,116 @@ def accept_quote(session: Session, quote_id: uuid.UUID, shipping_address: dict, 
                               discount=(ln.unit_price * ln.qty - ln.line_total), line_total=ln.line_total))
     session.flush()
     held = inventory.convert_quote_holds(session, quote.id, order.id)
-    owned_needed = {(ln.portfolio_id, ln.sku_id): ln.qty for ln in lines if ln.availability_source == "owned"}
-    held_qty: dict = {}
-    for h in held:
-        held_qty[h.portfolio_id] = held_qty.get(h.portfolio_id, 0) + h.qty
-    if owned_needed and sum(held_qty.values()) < sum(owned_needed.values()):
-        # Hold expired between quote and acceptance: try to re-reserve, else refuse (no overselling).
-        for (pid, sku), qty in owned_needed.items():
-            inventory.reserve(session, order.organization_id, portfolio_id=pid, sku_id=sku, qty=qty, kind="order",
-                              order_id=order.id)
+    owned = [ln for ln in lines if ln.availability_source == "owned"]
+    if owned and sum(h.qty for h in held) < sum(ln.qty for ln in owned):
+        for ln in owned:  # hold expired between quote and acceptance: re-reserve or refuse (no overselling)
+            inventory.reserve(session, order.organization_id, portfolio_id=ln.portfolio_id, sku_id=ln.sku_id,
+                              qty=ln.qty, kind="order", order_id=order.id)
     quote.status = "accepted"
     freeze_attribution(session, order)
-    transition(session, order, "confirmed", actor_user_id=actor_user_id, actor_type=actor_type,
-               reason="customer accepted quote", data={"quote_id": str(quote.id)})
-    next_status = "cod_confirmed" if order.payment_method == "cod" else "payment_pending"
-    transition(session, order, next_status, actor_user_id=actor_user_id, actor_type=actor_type)
+    posting.allocate_order_amounts(session, order)
+    _event(session, order, "confirmed", actor_type=actor_type, actor_user_id=actor_user_id,
+           reason="customer accepted quote", data={"quote_id": str(quote.id)})
+    order.status = "confirmed"
+    derive_status(session, order)
+    events.emit(session, "order_confirmed", order=order)
     if order.payment_method == "cod":
-        order.payment_status = "cod_pending"
+        events.emit(session, "payment_released", order=order, payment=None, basis="cod")
     audit(session, order.organization_id, "order.created_from_quote", "order", order.id, actor_type=actor_type,
           actor_user_id=actor_user_id, after={"quote_id": quote.id, "total": order.total})
     return order
 
 
-MARKETPLACE_STATUS = {
-    # normalized marketplace status -> OMS status target
-    "unpaid": "placed",
-    "ready_to_ship": "platform_fulfilling",
-    "shipped": "shipped",
-    "delivered": "delivered",
-    "completed": "delivered",
-    "canceled": "canceled",
-    "returned": "returned",
-}
+@events.subscribe("payment_released")
+def _route_when_released(session: Session, data: dict) -> None:
+    request_routing(session, data["order"])
 
-_PATHS = {
-    "placed": [],
-    "platform_fulfilling": ["confirmed", "payment_verified", "routed", "platform_fulfilling"],
-    "shipped": ["confirmed", "payment_verified", "routed", "platform_fulfilling", "shipped"],
-    "delivered": ["confirmed", "payment_verified", "routed", "platform_fulfilling", "shipped", "delivered"],
-}
+
+def cancel_item_qty(session: Session, order: Order, item: OrderItem, qty: int, *, reason: str, actor_user_id=None,
+                    actor_type: str = "user") -> Decimal:
+    """Cancel unshipped quantity of a line. Prepaid money for it becomes a refund obligation (F6); shipping income
+    is reallocated to the remaining lines. Returns the amount owed back to the customer."""
+    from app.modules import fulfillment
+
+    unshipped = item.qty - item.qty_canceled - item.qty_shipped
+    if qty <= 0 or qty > unshipped:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"only {unshipped} unshipped units can be canceled")
+    remaining = qty
+    unallocated = item.qty - item.qty_canceled - item.qty_allocated_owned - item.qty_allocated_dropship \
+        - item.qty_allocated_platform
+    remaining -= min(remaining, unallocated)
+    owned_free = item.qty_allocated_owned - fulfillment.shipped_qty(session, item, "OWNED_STOCK_BITESHIP")
+    take = min(remaining, owned_free)
+    if take > 0:
+        item.qty_allocated_owned -= take
+        _release_reservations(session, order.id, item, take)
+        fulfillment.reduce_group_item(session, item, "OWNED_STOCK_BITESHIP", take)
+        remaining -= take
+    take = min(remaining, item.qty_allocated_dropship - item.qty_procured)
+    if take > 0:
+        item.qty_allocated_dropship -= take
+        fulfillment.reduce_group_item(session, item, "DROPSHIP", take)
+        remaining -= take
+    take = min(remaining, item.qty_allocated_platform - fulfillment.shipped_qty(session, item, "PLATFORM_MANAGED"))
+    if take > 0:
+        item.qty_allocated_platform -= take
+        _release_reservations(session, order.id, item, take)
+        fulfillment.reduce_group_item(session, item, "PLATFORM_MANAGED", take)
+        remaining -= take
+    if remaining:
+        raise HTTPException(status.HTTP_409_CONFLICT, "quantity is already procured or in transit; use a return")
+    item.qty_canceled += qty
+    session.flush()
+    amount = posting.item_value(item, qty)
+    if order.payment_status in ("captured", "bank_matched"):
+        posting.canceled_before_shipment(session, order, item, amount, f"{item.id}:{item.qty_canceled}")
+    posting.reallocate_shipping_after_cancel(session, order)
+    fulfillment.refresh_cod_amounts(session, order)
+    _event(session, order, order.status, actor_type=actor_type, actor_user_id=actor_user_id, reason=reason,
+           data={"canceled_item": str(item.id), "qty": qty})
+    derive_status(session, order)
+    events.emit(session, "items_canceled", order=order, items=[(item, qty)])
+    return amount if order.payment_status in ("captured", "bank_matched") else Decimal("0")
+
+
+def _release_reservations(session: Session, order_id, item: OrderItem, qty: int) -> None:
+    from app.models.inventory import InventoryBalance, InventoryReservation
+
+    rows = session.scalars(select(InventoryReservation).join(
+        InventoryBalance, InventoryBalance.id == InventoryReservation.balance_id).where(
+        InventoryReservation.order_id == order_id, InventoryReservation.status == "active",
+        InventoryReservation.portfolio_id == item.portfolio_id, InventoryBalance.sku_id == item.sku_id)).all()
+    remaining = qty
+    for r in rows:
+        if remaining == 0:
+            break
+        take = min(r.qty, remaining)
+        bal = session.get(InventoryBalance, r.balance_id, with_for_update=True)
+        bal.reserved -= take
+        if take == r.qty:
+            r.status = "released"
+        else:
+            r.qty -= take
+        remaining -= take
+
+
+MARKETPLACE_STATUS = {"unpaid", "ready_to_ship", "shipped", "delivered", "completed", "canceled", "returned"}
 
 
 def ingest_marketplace_order(session: Session, account: PlatformAccount, payload: dict) -> tuple[Order, bool]:
     """Idempotent upsert of a native marketplace order (UNIQUE platform_account_id + external_order_id).
 
-    payload (normalized by the provider adapter): external_order_id, status, buyer_ref, created_at,
-    items: [{external_sku_ref, qty, unit_price}], shipping_fee, total."""
+    payload (normalized by the adapter): external_order_id, status, items[{external_sku_ref, qty, unit_price}],
+    shipping_fee, total. Fulfilment of native orders is platform-managed; owned stock is reserved and consumed so
+    shared inventory stays correct across channels."""
+    from app.modules import fulfillment
+
     existing = session.scalars(select(Order).where(
         Order.platform_account_id == account.id, Order.external_order_id == payload["external_order_id"])
         .with_for_update()).first()
-    target = MARKETPLACE_STATUS.get(payload["status"], "exception")
     created = existing is None
     if created:
-        items = []
+        resolved = []
         for it in payload["items"]:
             listing = session.scalars(select(PlatformListing).where(
                 PlatformListing.platform_account_id == account.id,
@@ -183,37 +238,28 @@ def ingest_marketplace_order(session: Session, account: PlatformAccount, payload
             if listing is None:
                 raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                                     f"unmapped marketplace SKU {it['external_sku_ref']}")
-            items.append((listing, it))
-        subtotal = sum((Decimal(str(it["unit_price"])) * it["qty"] for _, it in items), Decimal("0"))
-        from app.models.org import Portfolio
-
-        brand_id = account.brand_id or session.get(Portfolio, items[0][0].portfolio_id).brand_id
+            resolved.append((listing, it))
+        subtotal = sum((Decimal(str(it["unit_price"])) * it["qty"] for _, it in resolved), Decimal("0"))
+        brand_id = account.brand_id or session.get(Portfolio, resolved[0][0].portfolio_id).brand_id
         existing = Order(organization_id=account.organization_id, brand_id=brand_id,
                          order_number=_order_number(account.provider[:3].upper()), sales_channel=account.provider,
                          platform_account_id=account.id, external_order_id=payload["external_order_id"],
-                         payment_method="marketplace", subtotal=subtotal,
+                         payment_method="marketplace", payment_status="marketplace", subtotal=subtotal,
                          shipping_fee=Decimal(str(payload.get("shipping_fee", 0))),
                          total=Decimal(str(payload.get("total", subtotal))), placed_at=utcnow(),
-                         shipping_address={"masked": True})
+                         shipping_address={"masked": True}, status="placed", confirmed_at=utcnow())
         session.add(existing)
         session.flush()
-        for listing, it in items:
+        for listing, it in resolved:
             price = Decimal(str(it["unit_price"]))
             session.add(OrderItem(organization_id=account.organization_id, order_id=existing.id,
                                   portfolio_id=listing.portfolio_id, sku_id=listing.sku_id, listing_id=listing.id,
                                   qty=it["qty"], unit_price=price, line_total=price * it["qty"]))
         session.flush()
-        existing.fulfillment_route = "PLATFORM_MANAGED"
-    # Walk forward along the allowed path; never skip the state machine.
-    path = _PATHS.get(target)
-    if path is None:
-        if target in TRANSITIONS.get(existing.status, set()):
-            transition(session, existing, target, actor_type="system", reason=f"marketplace status {payload['status']}")
-    else:
-        for step in path:
-            if step == existing.status or step not in TRANSITIONS.get(existing.status, set()):
-                continue
-            transition(session, existing, step, actor_type="system", reason=f"marketplace status {payload['status']}")
-    if existing.status in ("payment_verified", "routed", "platform_fulfilling", "shipped", "delivered"):
-        existing.payment_status = "paid"
+        posting.allocate_order_amounts(session, existing)
+        _event(session, existing, "confirmed", reason="marketplace order ingested")
+        existing.status = "confirmed"
+        fulfillment.create_platform_groups(session, existing)
+    fulfillment.apply_marketplace_status(session, existing, payload["status"])
+    derive_status(session, existing)
     return existing, created

@@ -129,6 +129,7 @@ class ExceptionCase(OrgMixin, Base):
     sla_due_at: Mapped[datetime]
     decision: Mapped[str | None]
     approval_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("human_approvals.id"))
+    exposure: Mapped[Decimal] = mapped_column(default=Decimal("0"))
     resolution_note: Mapped[str | None]
     resolved_at: Mapped[datetime | None]
     context: Mapped[dict] = mapped_column(default=dict)
@@ -143,3 +144,68 @@ class ExceptionEvent(OrgMixin, Base):
     actor_user_id: Mapped[uuid.UUID | None]
     event: Mapped[str]
     detail: Mapped[dict] = mapped_column(default=dict)
+
+
+class ExternalOperation(OrgMixin, Base):
+    """Every external side effect is recorded and committed *before* the call (spec §27.6, ADR-015)."""
+
+    __tablename__ = "external_operations"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "provider", "operation", "idempotency_key"),
+        CheckConstraint("status in ('prepared','sent','confirmed','uncertain','failed')"),
+    )
+    platform_account_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("platform_accounts.id"))
+    provider: Mapped[str]
+    operation: Mapped[str]
+    idempotency_key: Mapped[str]
+    status: Mapped[str] = mapped_column(default="prepared")
+    request_summary: Mapped[dict] = mapped_column(default=dict)  # never secrets
+    provider_ref: Mapped[str | None]
+    attempts: Mapped[int] = mapped_column(default=0)
+    last_error: Mapped[str | None]
+    sent_at: Mapped[datetime | None]
+    confirmed_at: Mapped[datetime | None]
+    response: Mapped[dict] = mapped_column(default=dict)  # provider response summary (ids, waybill, url) — no secrets
+    subject_type: Mapped[str | None]
+    subject_id: Mapped[str | None]
+    claim_token: Mapped[uuid.UUID | None]  # owner of the current ``sent`` claim (fencing token)
+    claimed_at: Mapped[datetime | None]
+
+
+class ExternalOperationAttempt(OrgMixin, Base):
+    """One row per claimed attempt of an external operation (call or takeover of a dead claim)."""
+
+    __tablename__ = "external_operation_attempts"
+    operation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("external_operations.id"), index=True)
+    attempt_no: Mapped[int]
+    claim_token: Mapped[uuid.UUID] = mapped_column(unique=True)
+    kind: Mapped[str]  # call | takeover
+    finished_at: Mapped[datetime | None]
+    outcome: Mapped[str | None]
+    error: Mapped[str | None]
+
+
+class NotificationDelivery(OrgMixin, Base):
+    """One risk-alert notification per (case, channel): status, attempts, last error, correlation id (E2)."""
+
+    __tablename__ = "notification_deliveries"
+    case_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("exception_cases.id"), index=True)
+    channel: Mapped[str]
+    recipient_role: Mapped[str]
+    status: Mapped[str] = mapped_column(default="pending")  # pending | sent | failed | dead
+    attempts: Mapped[int] = mapped_column(default=0)
+    last_error: Mapped[str | None]
+    provider_ref: Mapped[str | None]
+    correlation_id: Mapped[str | None]
+    sent_at: Mapped[datetime | None]
+
+
+class DeadLetter(OrgMixin, Base):
+    __tablename__ = "dead_letters"
+    outbox_message_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("outbox_messages.id"), unique=True)
+    topic: Mapped[str]
+    last_error: Mapped[str | None]
+    attempts: Mapped[int]
+    reviewed_by: Mapped[uuid.UUID | None]
+    resolution: Mapped[str | None]  # requeued | discarded
+    resolved_at: Mapped[datetime | None]

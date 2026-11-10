@@ -8,7 +8,7 @@ import hashlib
 import hmac
 from typing import Protocol
 
-import httpx
+from app.integrations import http as provider_http
 
 
 def verify_chatwoot_signature(secret: str, raw_body: bytes, timestamp: str | None, signature: str | None) -> bool:
@@ -22,24 +22,58 @@ def verify_chatwoot_signature(secret: str, raw_body: bytes, timestamp: str | Non
 class ChatwootClient(Protocol):
     def ensure_conversation(self, inbox_identifier: str, contact_ref: str, name: str | None) -> int: ...
 
-    def post_message(self, conversation_id: int, content: str, message_type: str, private: bool = False) -> int: ...
+    def post_message(self, conversation_id: int, content: str, message_type: str, private: bool = False, *,
+                     source_id: str | None = None) -> int: ...
+
+    def find_by_source_id(self, conversation_id: int, source_id: str) -> dict | None: ...
 
     def open_for_human(self, conversation_id: int, reason: str) -> None: ...
 
 
 class MockChatwoot:
+    """Mock API-channel inbox. Like the real one (G-CW1, documentation-verified), every message created through the API
+    is echoed to the inbox webhook — ``echo_payload`` builds that callback for tests."""
+
     def __init__(self):
-        self.conversations: dict[str, int] = {}
-        self.messages: list[dict] = []
         self.opened: list[tuple[int, str]] = []
 
-    def ensure_conversation(self, inbox_identifier, contact_ref, name):
-        return self.conversations.setdefault(contact_ref, len(self.conversations) + 1)
+    @property
+    def messages(self) -> list[dict]:
+        from app.integrations import mockstore
 
-    def post_message(self, conversation_id, content, message_type, private=False):
-        self.messages.append({"conversation_id": conversation_id, "content": content, "type": message_type,
-                              "private": private})
-        return len(self.messages)
+        with mockstore.state("chatwoot") as st:
+            return list(st.get("messages", []))
+
+    def ensure_conversation(self, inbox_identifier, contact_ref, name):
+        from app.integrations import mockstore
+
+        with mockstore.state("chatwoot") as st:
+            convs = st.setdefault("conversations", {})
+            if contact_ref not in convs:
+                convs[contact_ref] = 1000 + len(convs) + 1
+            return convs[contact_ref]
+
+    def post_message(self, conversation_id, content, message_type, private=False, *, source_id=None):
+        from app.integrations import mockstore
+
+        with mockstore.state("chatwoot") as st:
+            msgs = st.setdefault("messages", [])
+            mid = 50000 + len(msgs) + 1
+            msgs.append({"id": mid, "conversation_id": conversation_id, "content": content,
+                         "message_type": message_type, "private": private, "source_id": source_id})
+        mockstore.fault_after_accept("chatwoot", "post_message")
+        return mid
+
+    def find_by_source_id(self, conversation_id, source_id):
+        hit = next((m for m in self.messages if m["source_id"] == source_id), None)
+        return {"ref": hit["id"]} if hit else None
+
+    @staticmethod
+    def echo_payload(m: dict, inbox_id: int) -> dict:
+        return {"event": "message_created", "id": m["id"], "content": m["content"],
+                "message_type": m["message_type"], "private": m["private"], "source_id": m["source_id"],
+                "sender": {"type": "agent_bot" if m["source_id"] else "user"},
+                "conversation": {"id": m["conversation_id"]}, "inbox": {"id": inbox_id}}
 
     def open_for_human(self, conversation_id, reason):
         self.opened.append((conversation_id, reason))
@@ -53,25 +87,40 @@ class LiveChatwoot:
     def _url(self, path: str) -> str:
         return f"{self.base}/api/v1/accounts/{self.account}{path}"
 
+    def _call(self, method: str, path: str, **kwargs):
+        """Every live Chatwoot call goes through the shared timeout + circuit-breaker policy (remediation E3)."""
+        return provider_http.request(method, self._url(path), breaker_key=f"chatwoot:{self.account}",
+                                     provider="chatwoot", headers=self.h, timeout=15, **kwargs)
+
     def ensure_conversation(self, inbox_identifier, contact_ref, name):
-        r = httpx.post(self._url("/contacts"), headers=self.h, timeout=15,
+        r = self._call("POST", "/contacts",
                        json={"inbox_id": self.inbox, "name": name or contact_ref, "identifier": contact_ref})
-        contact = r.json()["payload"]["contact"] if r.status_code < 300 else httpx.get(
-            self._url("/contacts/search"), headers=self.h, params={"q": contact_ref}).json()["payload"][0]
+        contact = r.json()["payload"]["contact"] if r.status_code < 300 else self._call(
+            "GET", "/contacts/search", params={"q": contact_ref}).json()["payload"][0]
         source_id = contact["contact_inboxes"][0]["source_id"] if contact.get("contact_inboxes") else contact_ref
-        conv = httpx.post(self._url("/conversations"), headers=self.h, timeout=15,
+        conv = self._call("POST", "/conversations",
                           json={"source_id": source_id, "inbox_id": self.inbox, "contact_id": contact["id"],
                                 "status": "pending"})
         conv.raise_for_status()
         return conv.json()["id"]
 
-    def post_message(self, conversation_id, content, message_type, private=False):
-        r = httpx.post(self._url(f"/conversations/{conversation_id}/messages"), headers=self.h, timeout=15,
-                       json={"content": content, "message_type": message_type, "private": private})
+    def post_message(self, conversation_id, content, message_type, private=False, *, source_id=None):
+        body = {"content": content, "message_type": message_type, "private": private}
+        if source_id:  # echo marker (G-CW1); also kept in content_attributes for older versions
+            body |= {"source_id": source_id, "content_attributes": {"oms_source_id": source_id}}
+        r = self._call("POST", f"/conversations/{conversation_id}/messages", json=body)
         r.raise_for_status()
         return r.json()["id"]
 
+    def find_by_source_id(self, conversation_id, source_id):
+        r = self._call("GET", f"/conversations/{conversation_id}/messages")
+        r.raise_for_status()
+        for m in r.json().get("payload", []):
+            if m.get("source_id") == source_id or (m.get("content_attributes") or {}).get("oms_source_id") == source_id:
+                return {"ref": m["id"]}
+        return None
+
     def open_for_human(self, conversation_id, reason):
         self.post_message(conversation_id, f"AI handoff: {reason}", "outgoing", private=True)
-        httpx.post(self._url(f"/conversations/{conversation_id}/toggle_status"), headers=self.h, timeout=15,
-                   json={"status": "open"}).raise_for_status()
+        self._call("POST", f"/conversations/{conversation_id}/toggle_status", json={"status": "open"}
+                   ).raise_for_status()

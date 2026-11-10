@@ -11,7 +11,8 @@ from app.models.customers import Customer, CustomerIdentity, CustomerPortfolio, 
 
 
 def resolve_customer(session: Session, org_id: uuid.UUID, brand_id: uuid.UUID, identities: dict[str, str],
-                     portfolio_ids: list[uuid.UUID], display_name: str | None = None) -> Customer:
+                     portfolio_ids: list[uuid.UUID], display_name: str | None = None, *,
+                     identity_domain_id: uuid.UUID | None = None, provider: str | None = None) -> Customer:
     """Find the customer by any known identifier within this brand, attach new identifiers, link portfolios.
 
     Two existing customers are merged only when *the same webhook* proves both identifiers belong to one person
@@ -47,6 +48,7 @@ def resolve_customer(session: Session, org_id: uuid.UUID, brand_id: uuid.UUID, i
     for itype, value in pairs:
         if (itype, value) not in known:
             session.add(CustomerIdentity(organization_id=org_id, customer_id=customer.id, brand_id=brand_id,
+                                         identity_domain_id=identity_domain_id, provider=provider,
                                          identity_type=itype, identity_value=value, first_seen_at=utcnow()))
     linked = set(session.scalars(select(CustomerPortfolio.portfolio_id).where(
         CustomerPortfolio.customer_id == customer.id)))

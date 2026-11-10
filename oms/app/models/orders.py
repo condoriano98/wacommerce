@@ -87,7 +87,9 @@ class Order(OrgMixin, Base):
     payment_method: Mapped[str]  # doku_link | manual_transfer | cod | marketplace
     payment_status: Mapped[str] = mapped_column(default="unpaid")  # unpaid | paid | cod_pending | collected | refunded
     fulfillment_route: Mapped[str | None]
-    settlement_status: Mapped[str] = mapped_column(default="none")  # none | expected | settled | mismatch
+    # Derived from ledger, reconciliation and cases (settlements.derive_settlement_status): none | expected |
+    # partially_settled | matched | variance | under_review | adjusted | closed
+    settlement_status: Mapped[str] = mapped_column(default="none")
     refund_status: Mapped[str] = mapped_column(default="none")
     currency: Mapped[str] = mapped_column(default="IDR")
     subtotal: Mapped[Decimal]
@@ -103,8 +105,23 @@ class Order(OrgMixin, Base):
 
 
 class OrderItem(OrgMixin, Base):
+    """Quantity pipeline per line (spec §8, D2). CHECKs make impossible states unrepresentable."""
+
     __tablename__ = "order_items"
-    __table_args__ = (CheckConstraint("qty > 0"),)
+    __table_args__ = (
+        CheckConstraint("qty > 0"),
+        CheckConstraint("qty_canceled + qty_allocated_owned + qty_allocated_dropship + qty_allocated_platform <= qty",
+                        name="alloc_le_ordered"),
+        CheckConstraint("qty_procured <= qty_allocated_dropship", name="procured_le_allocated"),
+        CheckConstraint("qty_shipped <= qty_allocated_owned + qty_procured + qty_allocated_platform",
+                        name="shipped_le_available"),
+        CheckConstraint("qty_delivered <= qty_shipped", name="delivered_le_shipped"),
+        CheckConstraint("qty_returned <= qty_delivered", name="returned_le_delivered"),
+        CheckConstraint("qty_refunded <= qty", name="refunded_le_ordered"),
+        CheckConstraint("least(qty_canceled, qty_allocated_owned, qty_allocated_dropship, qty_allocated_platform, "
+                        "qty_procured, qty_shipped, qty_delivered, qty_returned, qty_refunded) >= 0",
+                        name="qty_nonneg"),
+    )
     order_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orders.id"), index=True)
     portfolio_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portfolios.id"), index=True)
     sku_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("skus.id"), index=True)
@@ -114,6 +131,30 @@ class OrderItem(OrgMixin, Base):
     discount: Mapped[Decimal] = mapped_column(default=Decimal("0"))
     line_total: Mapped[Decimal]
     unit_cost: Mapped[Decimal | None]  # actual cost once known (inventory avg cost or purchase price)
+    qty_canceled: Mapped[int] = mapped_column(default=0)
+    qty_allocated_owned: Mapped[int] = mapped_column(default=0)
+    qty_allocated_dropship: Mapped[int] = mapped_column(default=0)
+    qty_allocated_platform: Mapped[int] = mapped_column(default=0)
+    qty_procured: Mapped[int] = mapped_column(default=0)
+    qty_shipped: Mapped[int] = mapped_column(default=0)
+    qty_delivered: Mapped[int] = mapped_column(default=0)
+    qty_returned: Mapped[int] = mapped_column(default=0)
+    qty_refunded: Mapped[int] = mapped_column(default=0)
+
+
+class OrderItemAllocation(OrgMixin, Base):
+    """Order-level amounts allocated to lines (rounding remainder to the last line). Effective-dated by policy
+    version so restatements never silently change history."""
+
+    __tablename__ = "order_item_allocations"
+    __table_args__ = (UniqueConstraint("order_item_id", "kind", "policy_version"),)
+    portfolio_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portfolios.id"), index=True)
+    order_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orders.id"), index=True)
+    order_item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("order_items.id"), index=True)
+    kind: Mapped[str]  # discount | shipping_income | shipping_cost | payment_fee | cod_fee | marketplace_fee | tax
+    amount: Mapped[Decimal]
+    method: Mapped[str] = mapped_column(default="pro_rata_line_total")
+    policy_version: Mapped[int] = mapped_column(default=1)
 
 
 class OrderEvent(OrgMixin, Base):
@@ -137,7 +178,8 @@ class Payment(OrgMixin, Base):
     provider: Mapped[str]  # doku | manual | biteship_cod | marketplace
     provider_ref: Mapped[str]
     amount: Mapped[Decimal]
-    status: Mapped[str] = mapped_column(default="pending")  # pending | paid | failed | expired
+    # gateway: pending -> captured -> settled ; manual: reported -> attested -> bank_matched (spec §8, §27.3)
+    status: Mapped[str] = mapped_column(default="pending")
     payment_url: Mapped[str | None]
     expires_at: Mapped[datetime | None]
     paid_at: Mapped[datetime | None]
@@ -145,9 +187,21 @@ class Payment(OrgMixin, Base):
     evidence: Mapped[dict] = mapped_column(default=dict)
 
 
+class PaymentEvent(OrgMixin, Base):
+    """Append-only payment history."""
+
+    __tablename__ = "payment_events"
+    payment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("payments.id"), index=True)
+    order_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orders.id"), index=True)
+    from_status: Mapped[str | None]
+    to_status: Mapped[str]
+    actor_user_id: Mapped[uuid.UUID | None]
+    detail: Mapped[dict] = mapped_column(default=dict)
+
+
 class PaymentNotification(OrgMixin, Base):
     __tablename__ = "payment_notifications"
-    __table_args__ = (UniqueConstraint("provider", "notification_id"),)
+    __table_args__ = (UniqueConstraint("organization_id", "provider", "notification_id"),)
     provider: Mapped[str]
     notification_id: Mapped[str]
     payment_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("payments.id"))

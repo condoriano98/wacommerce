@@ -1,13 +1,13 @@
 # 22 — Implementation Backlog (P0/P1/P2)
 
-> Source of truth: `docs/00-plan.md` (V3.1, approved 2026-11-10). This file is the topic view of the listed sections.
+> Source of truth: `docs/00-plan.md` (canonical V3.1 specification incl. §27 normative corrections). This file is a topic view.
 
 
 ## 22. Implementation backlog
 
 | Pri | Item | Module | Depends | Effort (d) | Test gate | External blocker |
 |---|---|---|---|---|---|---|
-| P0 | V3.1 baseline migration (legal entities, identity domains, composite FKs, roles w/o BYPASSRLS, resolvers) | migrations, core/db | M0 | 4 | RLS negative suite (#7) | Sumopod role privileges (G-OPS2) |
+| P0 | V3.1 forward migrations 0004–0007 expand/backfill/contract (legal entities, identity domains, composite FKs, roles w/o BYPASSRLS, resolvers) | migrations, core/db | M0 | 5 | RLS negative suite (#7) | Sumopod role privileges (G-OPS2) |
 | P0 | Accounting rules v2 + periods + CoA renumber + F1–F12 | finance | baseline | 4 | #3 #4 #13 + invariants | G-ACC1/G-TAX1 defaults |
 | P0 | Order items qty model, allocations, fulfillment groups, derived status | orders, fulfillment | baseline | 5 | #1 #2 | — |
 | P0 | Procurement purchase lines + qty invariant + copilot API | procurement | orders | 3 | #8 | — |
@@ -33,4 +33,5 @@
 | P2 | Google Ads + Data Manager conversions | integrations/google_ads | M1 | 4 | contract | access level |
 | P2 | TikTok Ads + marketplace ads | integrations/* | M1 | 4 | contract | app review |
 | P2 | Landing page + Pixel/website CAPI | landing | conversions | 3 | dedupe test | domain |
-| P2 | Metabase per-portfolio access | reporting | G-MB1 | 2 | #7 (reporting) | — |
+| P1 | Reporting roles + `reporting_principals` + PII-free views; OMS portfolio reporting API | reporting | baseline | 2 | #7 (reporting role spoof test) | — |
+| P1 | `external_operations` + provider idempotency policies + uncertain-outcome cases | core/outbox, integrations | outbox | 2 | worker-kill test | G-DOKU, G-BS4 |

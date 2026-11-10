@@ -1,6 +1,6 @@
 # 20 — Acceptance-Test Matrix & Invariants
 
-> Source of truth: `docs/00-plan.md` (V3.1, approved 2026-11-10). This file is the topic view of the listed sections.
+> Source of truth: `docs/00-plan.md` (canonical V3.1 specification incl. §27 normative corrections). This file is a topic view.
 
 
 ## 20. Acceptance-test matrix and invariants
@@ -17,9 +17,13 @@
 | 8 | Multiple supplier purchases within one order; duplicate purchase attempts rejected | M1 |
 | 9 | Overselling prevented under concurrent reservations across channels | M1 |
 | 10 | Missing marketplace credentials → capability `not_authorized`, no calls | M4 |
-| 11 | Failed/delayed settlement ages into exception with exposure | M1/M4 |
+| 11a | DOKU/COD/bank settlement failure or delay ages into exception with exposure | M1 |
+| 11b | Marketplace settlement failure or delay ages into exception with exposure | M4 |
 | 12 | Ad cost allocation change effective-dated; closed periods unchanged | M3 |
-| 13 | Financial close and adjusting entries | M1/M3 |
+| 13a | Ledger period close and adjusting entries | M1 |
+| 13b | FP&A snapshot immutability after close | M3 |
+| 19 | F1–F13 executed through OMS services against PostgreSQL match fixture lines | M1 |
+| 20 | Order-slice and reporting-role isolation (session_user identity, set_config/SET ROLE spoof attempts) | M1 |
 | 14 | AI tool authorization failures logged; prompt-injection fixtures | M2 |
 | 15 | WhatsApp outbound loop prevention (Chatwoot echo) | M2 |
 | 16 | Capital reallocation creates no cash journal | M1 |

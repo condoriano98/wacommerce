@@ -9,9 +9,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Protocol
 
-import httpx
-
 from app.core.config import get_settings
+from app.integrations import http as provider_http
 
 
 @dataclass
@@ -82,18 +81,32 @@ class WhatsAppSender(Protocol):
 
 
 class MockWhatsAppSender:
-    sent: list[dict] = []
+    """Mock Cloud API: every accepted send is recorded provider-side (see ``app.integrations.mockstore``)."""
+
+    @property
+    def sent(self) -> list[dict]:
+        from app.integrations import mockstore
+
+        with mockstore.state("whatsapp") as st:
+            return list(st.get("sent", []))
+
+    def _record(self, item: dict) -> str:
+        import uuid as _uuid
+
+        from app.integrations import mockstore
+
+        with mockstore.state("whatsapp") as st:
+            wamid = f"wamid.mock.{_uuid.uuid4().hex[:16]}"
+            st.setdefault("sent", []).append({**item, "wamid": wamid})
+        mockstore.fault_after_accept("whatsapp", "send_message")
+        return wamid
 
     def send_text(self, phone_number_id: str, to: dict, body: str) -> str:
-        wamid = f"wamid.mock.{len(self.sent) + 1}"
-        self.sent.append({"type": "text", "pnid": phone_number_id, "to": to, "body": body, "wamid": wamid})
-        return wamid
+        return self._record({"type": "text", "pnid": phone_number_id, "to": to, "body": body})
 
     def send_template(self, phone_number_id, to, template, language, params) -> str:
-        wamid = f"wamid.mock.{len(self.sent) + 1}"
-        self.sent.append({"type": "template", "pnid": phone_number_id, "to": to, "template": template,
-                          "params": params, "wamid": wamid})
-        return wamid
+        return self._record({"type": "template", "pnid": phone_number_id, "to": to, "template": template,
+                             "language": language, "params": params})
 
 
 class LiveWhatsAppSender:
@@ -104,8 +117,9 @@ class LiveWhatsAppSender:
         self.version = api_version or get_settings().meta_graph_version
 
     def _post(self, phone_number_id: str, body: dict) -> str:
-        r = httpx.post(f"https://graph.facebook.com/{self.version}/{phone_number_id}/messages", json=body,
-                       headers={"Authorization": f"Bearer {self.token}"}, timeout=20)
+        r = provider_http.request("POST", f"https://graph.facebook.com/{self.version}/{phone_number_id}/messages",
+                                  breaker_key=f"whatsapp:{phone_number_id}", provider="whatsapp", json=body,
+                                  headers={"Authorization": f"Bearer {self.token}"}, timeout=20)
         r.raise_for_status()
         return r.json()["messages"][0]["id"]
 

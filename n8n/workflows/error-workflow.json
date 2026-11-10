@@ -1,0 +1,115 @@
+{
+  "name": "OMS Error Workflow",
+  "nodes": [
+    {
+      "id": "et",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "fmt",
+      "name": "Structure Failure",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        220,
+        300
+      ],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "w",
+              "name": "workflow",
+              "type": "string",
+              "value": "={{ $json.workflow.name }}"
+            },
+            {
+              "id": "e",
+              "name": "execution_id",
+              "type": "string",
+              "value": "={{ $json.execution.id }}"
+            },
+            {
+              "id": "n",
+              "name": "failed_node",
+              "type": "string",
+              "value": "={{ $json.execution.lastNodeExecuted }}"
+            },
+            {
+              "id": "m",
+              "name": "message",
+              "type": "string",
+              "value": "={{ $json.execution.error.message }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "post",
+      "name": "Report to OMS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OMS_BASE_URL }}/integrations/n8n/errors",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "OMS_N8N_REPORTER_TOKEN",
+          "name": "OMS n8n error reporter token"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Structure Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structure Failure": {
+      "main": [
+        [
+          {
+            "node": "Report to OMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "verification": "NOT externally verified. The OMS error-intake endpoint is planned (M5 observability)."
+  }
+}

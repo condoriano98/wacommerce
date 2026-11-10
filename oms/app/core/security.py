@@ -41,7 +41,13 @@ def decode_token(token: str) -> dict:
 
 
 def _fernet() -> Fernet:
-    return Fernet(get_settings().credentials_master_key.encode())
+    """Encrypt with the current key; decrypt with current or previous keys (rotation, M5). Previous keys come from
+    ``OMS_CREDENTIALS_PREVIOUS_KEYS`` (comma-separated) and are removed once ``reencrypt_credentials`` has run."""
+    from cryptography.fernet import MultiFernet
+
+    s = get_settings()
+    keys = [s.credentials_master_key] + [k.strip() for k in s.credentials_previous_keys.split(",") if k.strip()]
+    return MultiFernet([Fernet(k.encode()) for k in keys])
 
 
 def encrypt_secret(plaintext: str) -> bytes:

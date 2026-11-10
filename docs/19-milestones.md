@@ -1,6 +1,6 @@
 # 19 — Implementation Milestones
 
-> Source of truth: `docs/00-plan.md` (V3.1, approved 2026-11-10). This file is the topic view of the listed sections.
+> Source of truth: `docs/00-plan.md` (canonical V3.1 specification incl. §27 normative corrections). This file is a topic view.
 
 
 ## 19. Implementation milestones (gated)
@@ -16,9 +16,9 @@ docs access, accountant availability.
 Modules: org/legal entities/identity domains, capital (mandates/commitments), platforms + capability registry, catalog,
 customers, quotes, orders + items + allocations, fulfillment groups, procurement (purchase lines), inventory (goods in
 transit, counts), payments, settlements, reconciliation, ledger (periods, rules v2), approvals, audit, outbox +
-Procrastinate. Migrations: **rebaseline** 0001–0003 (no deployed data exists) into a V3.1 baseline with composite FKs,
-roles without BYPASSRLS. Tests: F1–F12, invariants, RLS negative suite, concurrency (oversell, over-procurement).
-Mock/live: all providers mocked. Controls: approvals, audit. DoD: acceptance tests 1–9, 11, 13, 16–18 green.
+Procrastinate. Migrations: **forward-only 0004+** (expand/backfill/contract, ADR-013/014) with composite FKs, roles
+without BYPASSRLS; history of 0001–0003 preserved. Tests: F1–F12, invariants, RLS negative suite, concurrency (oversell, over-procurement).
+Mock/live: all providers mocked. Controls: approvals, audit. DoD: acceptance tests 1, 2, 3, 4, 7, 8, 9, 11a, 13a, 16, 17, 19, 20 green (local + CI).
 Deployment readiness: staging DB migration dry-run. Blockers: G-ACC1/G-TAX1 defaults configurable.
 
 **M2 — WhatsApp commerce vertical slice** (≈20 days)
@@ -31,12 +31,12 @@ Blockers: WABA + Chatwoot instance on Sumopod; DOKU sandbox keys.
 
 **M3 — FP&A & capital intelligence** (≈15 days)
 Modules: waterfall views, L1–L3, budgets/forecasts, 13-week cash forecast, capital utilisation, simulator + stress,
-risk alerts, bulk-buy evaluator, close/snapshots, Metabase. Tests: 12, 13, 18 + snapshot immutability. DoD: Rp100M
+risk alerts, bulk-buy evaluator, close/snapshots, Metabase. Tests: 12, 13b, 18 + S1–S9. DoD: Rp100M
 scenario reproducible; alerts fire on breach.
 
 **M4 — Marketplace & advertising expansion** (≈25 days)
 Modules: Shopee, TikTok Shop (+Tokopedia & Shop), Lazada adapters (orders, fees, settlements), Meta/Google/TikTok/
-marketplace ads insights, CSV import framework. Tests: 10, 11 + contract tests against recorded sandbox payloads.
+marketplace ads insights, CSV import framework. Tests: 10, 11b + contract tests against recorded sandbox payloads.
 Mock vs live: mocked until registry states `available`. Blockers: Shopee eligibility, TikTok ISV, Lazada app approval,
 Google/TikTok app reviews.
 
