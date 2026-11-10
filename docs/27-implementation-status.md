@@ -220,6 +220,21 @@ Local: **211 passed, 0 failed, 0 skipped** (OMS gate); dashboard 7/7 mocked + 8/
 CI: green on every remediation commit — OMS 48/49 (`846cab4`) through 64/65 (`53c9c46`), Security 11–24, Dashboard
 15–23; Dashboard PR run 23 includes the new `live-e2e` job (real browser → dashboard → OMS → PostgreSQL), green. Production stays **NO-GO**; new gate **G-SEC1** (database identity).
 
+## Post-Remediation Financial Integrity Review — Round 2 (2026-11-10)
+
+Review of `4586189`: P0 reconciliation identity, P0 legal-entity bank matching, P0 settlement lifecycle, P1 payout
+matching, P1 simulator opening inventory — all reproduced with failing tests and fixed. Details in
+`docs/31-remediation-report.md` (section "Round 2").
+
+| Commit | Finding | Migration |
+|---|---|---|
+| `d458db1` | P0-1 tenant/account-scoped reconciliation, notification and idempotency identities | 0025 |
+| `016fc1c` | P0-2 legal-entity-safe, deterministic, locked manual bank matching | — |
+| `0ec7b2a` | P0-3 settlement lifecycle, suspense 2400, derived states, COD capping | 0026 |
+| `aa1641d` | P1-4 deterministic payout matching + operator resolution; P1-5 simulator opening stock | — |
+
+Local: **242 passed, 0 failed, 0 skipped**; dashboard 7/7 mocked + 8/8 live. Production stays **NO-GO**.
+
 ## Milestone log
 **M3 closed 2026-11-10**: local and CI green (both workflows) on `24a559f`/`26e3d68`; no external systems involved.
 **M5 implementation closed 2026-11-10**: local and CI green on `434ab5d` (OMS, Security, Dashboard). This closes the implementation scope only — the release decision stays **NO-GO** (`docs/25`) until the external and governance gates close (G-DOKU, G-BS1–3, G-CW1, marketplace/ads access, G-ACC1/G-TAX1, G-GOV1, G-OPS1/2, G-ADS1, G-MB1 instance) and a human signs off.
@@ -235,5 +250,6 @@ CI: green on every remediation commit — OMS 48/49 (`846cab4`) through 64/65 (`
 | M2 | `9d2473e` (slices `09c9d33`, `f634227`, `9692cc6`) | ✅ push run 17 (42753626706), PR run 18 (42753632856); slices ✅ runs 11, 13, 15 | 117/0/0 (`cd oms && uv run pytest`) | WhatsApp vertical slice, #5, #6, #14, #15, E2E | none — all providers mocked; n8n not verified |
 | M3 | `24a559f` (slices `d0658a7`→fix `d367e84`, `76ff6c5`→fix `55a9a29`, `ef4792e`) | ✅ OMS push 30 / PR 31, Dashboard push 1 / PR 2 (`24a559f`); PR runs OMS 32 + Dashboard 3 (`26e3d68`) | 130/0/0 OMS (`cd oms && uv run pytest`); dashboard build + 5/0/0 Playwright | waterfall + tie-out, #12, #13b, S1–S9 + #18, cash forecast, bulk-buy, FP&A API, dashboard | none — no external systems involved; Metabase instance unverified |
 | M4 | `9d45743` + review fixes `454cf38` | ✅ `9d45743` push 34 / PR 35, `b1a2735` PR 36; review fixes `454cf38` push 37 / PR 38 | 151/0/0 | adapters (mock), channel sync, CSV imports, #10, #11b, review P0/P1 fixed | none — all marketplace/ads access blocked; G-ADS1 open |
+| Remediation round 2 | `d458db1` … `aa1641d` | see PR #2 checks / docs/31 R2.5 | 242/0/0 OMS; dashboard 7/7 + 8/8 | P0-1..P0-3, P1-4, P1-5 fixed with red→green tests | none — providers mocked; release **NO-GO** |
 | Remediation | `846cab4` … `53c9c46` (9 commits) | ✅ OMS 48–65, Security 11–24, Dashboard 15–23 (PR 23 incl. `live-e2e`) | 211/0/0 OMS; dashboard 7/7 mocked + 8/8 live | review findings A1–G fixed with red→green regression tests (docs/31) | none — providers mocked; G-SEC1 added; release **NO-GO** |
 | M5 | `1fd96d6`, `a10cb8e`, `ae17bd1`, CI fix `434ab5d` | ✅ `1fd96d6` push 39 / PR 40; `a10cb8e`/`ae17bd1` ❌ OMS runs 41–44 (CI installed a hand-written tool list without `hypothesis`; code unaffected) → fixed by `434ab5d`: OMS push 45 / PR 46, Security push 5 / PR 6 (gitleaks full history clean, pip-audit and npm audit clean), Dashboard PR 12 | 171/0/0 (`cd oms && uv run pytest`) | hardening tests 1–9 automated or evidenced; deploy configs; release checklist | DR drill preliminary (local only; G-OPS1 open); no deployment; release **NO-GO** |

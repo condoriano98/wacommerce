@@ -89,6 +89,16 @@ contract liabilities = Σ prepaid undelivered order value; COD/marketplace recei
   true-up per item against its own accrual; each portfolio's 1110 clears.
 - **Posting identity (A2).** One journal per (organization, source_type, source_id), enforced by the database.
 
+## Round 2 amendments (2026-11-10, pending accountant confirmation — G-ACC1)
+
+- **2400 Unapplied settlement receipts (suspense)** — liability for money a provider paid that no open receivable
+  explains (duplicate payout under a new id, excess payout, duplicate COD remittance). Never used to clear a
+  receivable; always accompanied by a case; released only by a human decision (refund to the provider or recognition).
+- **Partial marketplace payouts** release the accrued expected fee pro rata to the gross they cover; the fee true-up is
+  booked per payout.
+- **Accepted settlement variance** (approval): Dr 5300 marketplace fees/claims / Cr 1110 for the receivable the
+  provider will not pay.
+
 ## Executable fixtures
 `docs/fixtures/journals.yaml` encodes F1–F13 (F3a/F3b split; F13 credit losses). The YAML balance check is a sanity
 test only; acceptance test #19 executes the real OMS services against PostgreSQL and compares the produced ledger lines

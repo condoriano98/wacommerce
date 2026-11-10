@@ -35,3 +35,21 @@ duplicate_order, oversold_marketplace, manual_review, **bank_unmatched**, **stoc
   expected at delivery; a fee above the accrual is booked as a true-up **and** opens a variance case for review.
   Multi-portfolio orders get an org-level item; later partial deliveries raise an open expectation.
 - **COD expectations** are per shipment and deduct only that shipment's carrier cost and COD fee.
+
+## Round 2 amendments (2026-11-10)
+
+- **Identity.** Reconciliation items are unique per (organization, kind, provider account, reference). A provider
+  reference is never matched across organizations or accounts; ambiguity opens a case; unprovable legacy items are
+  quarantined.
+- **Manual transfers** match only bank lines of the order's legal entity, exact amount, whole-token reference, exactly
+  one candidate (otherwise `payment_mismatch` case).
+- **Provider payouts** match only with organization, legal entity, currency, amount and whole-token reference; several
+  candidates → `bank_unmatched` case → `resolve_bank_match` with approval.
+- **Marketplace payout semantics.** Lines may carry `final` (default true — Shopee escrow pays an order once). The
+  receivable is cleared by at most what is outstanding; the accrued fee is released pro rata to the gross share; excess
+  and duplicate payouts go to **2400 suspense** with a case. Reconciliation accumulates receipts; a final payout
+  decides matched vs variance. Settlement status: none → expected → partially_settled → matched / variance →
+  under_review → adjusted → closed (closed = matched or adjusted, cases resolved, payout proven by the bank).
+- **Variance acceptance** requires an approved `variance_acceptance`; posts Dr 5300 / Cr 1110 for the unpaid
+  receivable; audited.
+- **COD remittance** is capped per shipment at the COD still expected; excess → 2400 + case; lines carry the order.

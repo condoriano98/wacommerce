@@ -69,6 +69,14 @@ M5 is the **target state**, not permission to deploy. M0–M4 acceptance conditi
 - Next engineering work: M0 gate closure followed by M1 schema/application corrections, while building CI and safety checks in parallel.
 - Do not sign off M5 until every required evidence link is attached and independently reviewed.
 
+## Round 2 financial integrity review (2026-11-10)
+
+| Gate | Evidence | State |
+|---|---|---|
+| Tenant/account-scoped reconciliation identities | `test_reconciliation_identity.py`; migration 0025 with quarantine of unprovable legacy items | **Met in code** |
+| Legal-entity-safe cash recognition | `test_bank_matching_boundaries.py` (entity, ambiguity, concurrency) | **Met in code** |
+| Settlement lifecycle (no double clearing, derived state, suspense) | `test_settlement_lifecycle.py`; migration 0026 | **Met in code** — payout `final` semantics and 2400 policy need provider docs / accountant sign-off (G-ACC1) |
+
 ## Release decisions after the remediation (2026-11-10)
 
 - **PR #2 → development branch:** ready for human review once its CI (including `live-e2e`) is green; a reviewer

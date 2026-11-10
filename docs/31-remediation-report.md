@@ -132,3 +132,79 @@ CI on `impl/v31` (OMS core / Security / Dashboard), push and PR runs:
 2. **Production:** **NO-GO.** Open: G-SEC1, G-OPS1/2, G-DOKU, G-BS1–4, G-CW1, G-ACC1/G-TAX1, G-GOV1, G-ADS1,
    marketplace/ads access, G-MB1. A green CI run is necessary but not sufficient; no live transaction, purchase,
    booking, refund, ad change or capital movement is authorised.
+
+
+---
+
+# Post-Remediation Financial Integrity Review — Round 2 (2026-11-10)
+
+Independent review of `4586189`. Remote HEAD was `4586189` — none of the findings had been addressed. Same method as
+above (red regression test → minimal fix → full gate → CI). Commits `d458db1`, `016fc1c`, `0ec7b2a`, `aa1641d`;
+migrations **0025** and **0026** (forward-only, expand → backfill → constrain; 0001–0024 untouched).
+
+## R2.1 Findings
+
+| ID | Finding | Root cause | Fix | Migration impact | Regression tests | Red before | Commit |
+|---|---|---|---|---|---|---|---|
+| P0-1 | Reconciliation identities collide across organizations / provider accounts | `reconciliation_items UNIQUE(kind, expected_ref)` + `ON CONFLICT DO NOTHING`: the second tenant's `gateway:PO-001` expectation was silently dropped; `match()` looked items up by (kind, ref) only. Same pattern in `payment_notifications(provider, notification_id)` and `external_operations(provider, operation, key)` | Identity (organization, kind, provider account, reference); `find()` with explicit organization and account, `AmbiguousReference` → case; org-scoped notification and idempotency keys; payout matching limited to the line's organization | **0025**: new columns `platform_account_id`, `identity_quarantined`; backfill only where provable (marketplace → order's account; payout → account on the 1050 lines of its source journals); unprovable legacy payout items **quarantined** (never auto-matched; invariant); new unique key validated before the old global ones are dropped; nothing deleted | `test_reconciliation_identity.py` (4 + 3 P1) | second org's expectation missing (`[]`); one org with two accounts kept 1 of 2 items; DOKU notification id → `duplicate` for the other org; same idempotency key → `NoResultFound` | `d458db1` |
+| P0-2 | Manual bank matching ignored the legal entity | `match_bank_lines` matched on amount + substring, took `next(...)`, no row locks | Bank account → legal entity must equal `entity_for_order(order)`; same organization; exact amount; whole-token reference (`contains_ref`); several candidates → `payment_mismatch` case; lines locked `FOR UPDATE SKIP LOCKED`, payment re-checked under lock; B1 posting unchanged | none | `test_bank_matching_boundaries.py` (6) | other entity's line matched; first of two candidates taken; `BCA-77` matched `BCA-777`; 3 concurrent matchers each "matched" | `016fc1c` |
+| P0-3 | Settlement status forced to `settled`; receivables clearable twice | `marketplace_payout` set `settlement_status = "settled"` unconditionally; a new payout id for a cleared order posted another clearing journal; no partial/final, excess, line identity or locking | Content-hashed settlement identity (replay no-op, altered replay → case); immutable numbered raw lines; order lock; per-item clearing capped at outstanding, excess / duplicates → **2400 suspense** + case; accrued-fee portion pro rata to gross share; cumulative reconciliation (final payout decides); derived status; approved `accept_settlement_variance`; COD remittance capped, account-scoped and order-dimensioned | **0026**: account 2400; `settlements.content_sha256`; `settlement_lines.line_no` + unique + immutability trigger (existing lines numbered); settlement status vocabulary + CHECK (legacy `settled`→`matched`, `mismatch`→`variance`) | `test_settlement_lifecycle.py` (11) | always `settled`; 1110 −19,600 on excess; −110,400 on second payout id (fees booked twice); altered replay ignored; partial payout mis-cleared; concurrent payouts over-cleared; COD remittance never cleared the order's 1100 dimension | `0ec7b2a` |
+| P1-4 | Provider payout matching took the first substring match | `token in reference` and `next(...)` | `_payout_fits`: organization, legal entity, currency (entity base currency vs payout currency), exact amount, whole-token reference; several fits → `bank_unmatched` case; `resolve_bank_match` with approval (approver ≠ requester), same checks, audit, case resolved | none | `test_reconciliation_identity.py::test_payout_*`, `::test_ambiguous_payout_*` | `PO-1` matched `PO-10`; IDR payout matched a USD entity | `aa1641d` |
+| P1-5 | Simulator opening inventory vs purchases inconsistent | `opening_inventory` replaced the stock while `inventory_buy` was still paid in week 0; no supplier terms for the initial buy | `opening_inventory` = owned (no cash); `inventory_buy` = new week-0 purchase with `initial_lead_time_weeks` and `supplier_payment_lag_weeks`; weekly open commitments and supplier payables; `opening_cash + net_cash_flow` = last cash; engine `sim-1.2`; seed unchanged | none | `test_simulator_opening_inventory.py` (7) | week-0 purchase missing from stock; supplier credit paid in week 0 | `aa1641d` |
+
+## R2.2 Audit of globally unique references
+
+| Key | Before | After | Reasoning |
+|---|---|---|---|
+| `reconciliation_items` | (kind, expected_ref) | (organization, kind, account, ref) NULLS NOT DISTINCT | provider refs are per account |
+| `payment_notifications` | (provider, notification_id) | (organization, provider, notification_id) | DOKU request ids are per merchant |
+| `external_operations` | (provider, operation, key) | (organization, provider, operation, key) | keys are tenant-generated |
+| `settlements` | (platform_account, external_id) | unchanged + content hash | already account-scoped |
+| `shipments` | (carrier_account, external_id) | unchanged; resolver refuses duplicates (C3); COD lookup account-scoped | |
+| `payments` | (provider, provider_ref) | unchanged | OMS-generated refs with a uuid fragment; a collision errors, never misroutes |
+| `external_purchases` | (marketplace, external_order_id) | unchanged | marketplace order numbers are globally unique (Shopee/Tokopedia); noted for review |
+| `users.email` | global | unchanged | login identity is global by design |
+
+## R2.3 Accounting and reconciliation tie-out
+
+- **Exact payout:** 1110 → 0, status `matched`, no case. **Short final payout:** 1110 keeps 10,400, status
+  `variance`, one case. **Excess:** 1110 → 0, 2400 credit 19,600, case. **Second payout id:** 1110 stays 0, 2400 holds
+  110,400, 5300 stays 9,600 (fees not booked twice), case. **Two partials:** 1110 55,200 (`partially_settled`) → 0
+  (`matched`), reconciliation actual 110,400. **Fee true-up:** 5300 10,000, variance case. **Multi-portfolio:** each
+  portfolio's 1110 = 0. **Concurrent payouts:** 1110 = 0, the other payout in 2400. **Approved adjustment:** Dr 5300 /
+  Cr 1110 10,400 → `adjusted`/`closed`. **COD reported twice:** 1100 per order = 0, 2400 holds 148,050, case.
+- Fixture F4 (and F1–F13) unchanged and green; new invariants: `marketplace_receivable_negative`,
+  `cod_receivable_negative`, `settlement_suspense_without_case`, `reconciliation_identity_quarantined`.
+
+## R2.4 Isolation results
+
+- Two organizations with the same payout id `PO-001` and amount: both expectations created, both bank-matched and
+  closed independently. Same id on two accounts of one organization: both kept; a bank line fitting both is not matched
+  (case) until an approved operator resolution.
+- Same amount and reference on another organization's bank account, or another legal entity of the same organization:
+  no match. Concurrent matchers: one journal, one payment transition, one matched line.
+
+## R2.5 Test and CI summary
+
+- OMS gate: **242 passed, 0 failed, 0 skipped** (211 before round 2; +31). Dashboard: **7/7** mocked and **8/8** live
+  (real OMS + PostgreSQL) — no UI change required.
+- Migration round trip (scratch DB, legacy duplicate postings + an unprovable legacy payout item): 0018 → 0024 →
+  head (item quarantined, old global key gone) → 0017 → head.
+- CI: see `docs/27` (runs for `d458db1` … `aa1641d` and this documentation commit).
+
+## R2.6 Remaining technical findings (open, documented)
+
+- Marketplace payout `final` semantics are an assumption (Shopee escrow releases once per order); per-provider
+  confirmation needed (G-ACC1 / provider docs). Payouts with item-level fee detail are still allocated by item gross.
+- Suspense (2400) resolution is manual (refund to the platform or recognition) — only receivable variances have a
+  controlled adjustment path.
+- `external_purchases (marketplace, external_order_id)` stays global (marketplace order numbers are global).
+- Outflows (refunds, supplier payments, ad charges, packing) still credit 1000 when recorded (unchanged from round 1).
+- G-SEC1 database identity unchanged.
+
+## R2.7 Decisions
+
+1. **PR #2 → development branch:** ready for independent review once CI for the round-2 commits is green. Remains a
+   draft; merge only with human approval.
+2. **Production: NO-GO** — G-SEC1, G-OPS1/2, G-DOKU, G-BS1–4, G-CW1, G-ACC1/G-TAX1 (now including 1050, 2400 and the
+   payout semantics), G-GOV1, G-ADS1, marketplace/ads access, G-MB1.
