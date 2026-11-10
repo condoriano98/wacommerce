@@ -15,7 +15,7 @@ from app.models.org import RiskPolicy
 from app.modules.fpa import cash, risk, simulator
 from app.modules.fpa.simulator import Channel, PortfolioInputs, SimInputs
 from tests.conftest import owner_session
-from tests.test_accounting_services import _order, _pay_gateway, _ship_owned
+from tests.test_accounting_services import _order, _ship_owned
 from tests.world import D, build_world, principal
 
 
