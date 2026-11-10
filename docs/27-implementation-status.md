@@ -122,3 +122,4 @@ operations}.py` (dead letters, uncertain operations, procurement copilot), n8n `
 | M0 | `103608a` | ✅ PR run 3 | 56/0/0 (`cd oms && uv run pytest -q`) | spec consolidated, fixtures, inventory, impact assessment | provider gates open |
 | M1 core | `73947dd` | ✅ push run 6, PR run 7 (`c0f085a` WIP failed, superseded) | 80/0/0 | services, migrations 0004–0007, acceptance #1–4, 7–9, 11a, 13a, 16, 17, 19, 20 | none (all providers mocked/absent) |
 | M1 worker | `3057cd1` | ✅ push run 8 (42749665055), PR run 9 (42749670705) | 84/0/0 (`cd oms && uv run pytest`, PostgreSQL 16.x local) | Procrastinate executor (0008, `app/worker.py`) | G-PROC verified locally |
+| M2 | `9d2473e` (slices `09c9d33`, `f634227`, `9692cc6`) | _pending_ | 117/0/0 (`cd oms && uv run pytest`) | WhatsApp vertical slice, #5, #6, #14, #15, E2E | none — all providers mocked; n8n not verified |
