@@ -221,7 +221,7 @@ def match_bank_lines(session: Session, principal: Principal) -> int:
         for item in orders.items_of(session, order.id):  # F13b: release any allowance before clearing 1105
             allowance = -posting._balance(session, A.CREDIT_LOSS_ALLOWANCE, order_item_id=item.id)
             if allowance > 0:
-                posting.credit_loss(session, order, item, allowance, "release", f"{hit.id}:{item.id}")
+                posting.credit_loss(session, order, item, allowance, "release", f"bankmatch:{hit.id}:{item.id}")
         posting.payment_bank_matched(session, order, hit, line.amount)
         reconciliation.match(session, "bank_manual", str(hit.id), actual_ref=str(line.id), actual_amount=line.amount,
                              evidence={"bank_line": str(line.id), "reference": line.reference})

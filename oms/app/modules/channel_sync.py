@@ -195,12 +195,17 @@ def rotate_refresh_token(org_id: uuid.UUID, account_id: uuid.UUID, adapter) -> b
         op = external_ops.prepare(org_id, account.provider, "token_refresh", key, platform_account_id=account_id,
                                   subject_type="platform_account", subject_id=str(account_id))
         if op.status in ("sent", "uncertain"):
-            external_ops._uncertain(org_id, op.id, "refresh token may have been consumed; new tokens not stored")
+            token = external_ops.takeover(org_id, op.id) if op.status == "sent" else None
+            if token is not None:
+                external_ops._uncertain(org_id, op.id, "refresh token may have been consumed; new tokens not stored",
+                                        token=token)
             _mark_reauth(s, account, "refresh token state uncertain after a failed rotation; reauthorization required")
             return False
         if op.status == "confirmed":  # already rotated from this version (should not happen under the lock)
             return False
-        external_ops._update(org_id, op.id, status="sent", sent_at=utcnow(), attempts=op.attempts + 1)
+        claim = external_ops.claim(org_id, op.id)  # committed before the provider call
+        if claim is None:
+            return False
         new = adapter.refresh_token(decrypt_secret(bytes(row.ciphertext)))
         expires = utcnow() + timedelta(seconds=int(new.get("expire_in", 14400)))
         ok = s.execute(text("select rotate_credential(:a, 'refresh_token', :v, :c, :e)"),
@@ -210,7 +215,11 @@ def rotate_refresh_token(org_id: uuid.UUID, account_id: uuid.UUID, adapter) -> b
         s.execute(text("select rotate_credential(:a, 'access_token', :v, :c, :e)"),
                   {"a": account_id, "v": cur.version, "c": encrypt_secret(new["access_token"]), "e": expires})
         o = s.get(ExternalOperation, op.id, with_for_update=True)
+        if o.claim_token != claim or o.status != "sent":  # fenced: never confirm someone else's claim
+            raise RuntimeError("token rotation claim superseded")
         o.status, o.confirmed_at, o.response = "confirmed", utcnow(), {"rotated_from_version": row.version}
+        s.execute(text("update external_operation_attempts set outcome = 'confirmed', finished_at = now() "
+                       "where claim_token = :t"), {"t": claim})
         return bool(ok)
 
 

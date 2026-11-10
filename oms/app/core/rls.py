@@ -117,6 +117,7 @@ TABLE_POLICIES: dict[str, tuple[str, str]] = {
     "reconciliation_runs": (ORG_SCOPE, ""),
     "reconciliation_items": (PORTFOLIO_STRICT, "portfolio_id"),
     "external_operations": ("org_scope_read", ""),
+    "external_operation_attempts": ("org_scope_read", ""),
     "dead_letters": (ORG_SCOPE, ""),
     # M2 messaging (migration 0010)
     "wa_events": ("org_scope_read", ""),
@@ -215,6 +216,10 @@ V31_NEW_TABLES = (
     "reconciliation_items", "external_operations", "dead_letters",
 )
 M2_NEW_TABLES = ("wa_events", "message_mappings", "message_templates", "media_objects")
-V30_TABLE_POLICIES = {k: v for k, v in TABLE_POLICIES.items() if k not in V31_NEW_TABLES + M2_NEW_TABLES}
+# Tables created by later migrations (0018+) that set up their own policies.
+REMEDIATION_TABLES = ("external_operation_attempts", "journals", "shipment_cost_allocations",
+                      "notification_deliveries")
+V30_TABLE_POLICIES = {k: v for k, v in TABLE_POLICIES.items()
+                      if k not in V31_NEW_TABLES + M2_NEW_TABLES + REMEDIATION_TABLES}
 V30_APPEND_ONLY = tuple(t for t in APPEND_ONLY if t not in V31_NEW_TABLES)
 V30_NO_APP_ACCESS = ("account_credentials",)

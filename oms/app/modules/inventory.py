@@ -213,7 +213,9 @@ def transfer_between_portfolios(session: Session, org_id: uuid.UUID, *, from_por
                                       reference_id=reference))
     amount = (cost * qty).quantize(Decimal("0.01"))
     # Same legal entity: inventory changes portfolio dimension at cost; the pair nets to zero on consolidation.
-    post_journal(session, org_id, source_type="inventory_transfer", source_id=reference,
-                 legal_entity_id=src.legal_entity_id, lines=[
+    jid = post_journal(session, org_id, source_type="inventory_transfer", source_id=reference,
+                       legal_entity_id=src.legal_entity_id, lines=[
         JournalLine(A.INVENTORY, debit=amount, portfolio_id=to_portfolio),
         JournalLine(A.INVENTORY, credit=amount, portfolio_id=from_portfolio)])
+    if jid is None:  # the stock moves above roll back with the transaction
+        raise ValueError(f"inventory transfer {reference} was already posted")

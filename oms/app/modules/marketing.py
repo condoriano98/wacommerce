@@ -112,9 +112,10 @@ def accrue_day(session: Session, org_id: uuid.UUID, legal_entity_id: uuid.UUID, 
         lines = ([JournalLine(A.ADVERTISING, debit=delta, **kw), JournalLine(A.ADS_PAYABLES, credit=delta, **kw)]
                  if delta > 0 else
                  [JournalLine(A.ADS_PAYABLES, debit=-delta, **kw), JournalLine(A.ADVERTISING, credit=-delta, **kw)])
-        post_journal(session, org_id, source_type="ad_spend_accrued", source_id=f"{key}:r{n}", lines=lines,
-                     legal_entity_id=legal_entity_id, accounting_date=utcnow().date() if closed else day,
-                     event_time=datetime.combine(day, datetime.min.time(), tzinfo=UTC),
-                     memo=("restatement of closed-period ad spend" if closed else None))
-        posted.append((pid, delta, closed))
+        jid = post_journal(session, org_id, source_type="ad_spend_accrued", source_id=f"{key}:r{n}", lines=lines,
+                           legal_entity_id=legal_entity_id, accounting_date=utcnow().date() if closed else day,
+                           event_time=datetime.combine(day, datetime.min.time(), tzinfo=UTC),
+                           memo=("restatement of closed-period ad spend" if closed else None))
+        if jid is not None:  # None: a concurrent accrual already booked this revision (unique posting key)
+            posted.append((pid, delta, closed))
     return posted

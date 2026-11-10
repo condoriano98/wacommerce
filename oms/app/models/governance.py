@@ -168,6 +168,21 @@ class ExternalOperation(OrgMixin, Base):
     response: Mapped[dict] = mapped_column(default=dict)  # provider response summary (ids, waybill, url) — no secrets
     subject_type: Mapped[str | None]
     subject_id: Mapped[str | None]
+    claim_token: Mapped[uuid.UUID | None]  # owner of the current ``sent`` claim (fencing token)
+    claimed_at: Mapped[datetime | None]
+
+
+class ExternalOperationAttempt(OrgMixin, Base):
+    """One row per claimed attempt of an external operation (call or takeover of a dead claim)."""
+
+    __tablename__ = "external_operation_attempts"
+    operation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("external_operations.id"), index=True)
+    attempt_no: Mapped[int]
+    claim_token: Mapped[uuid.UUID] = mapped_column(unique=True)
+    kind: Mapped[str]  # call | takeover
+    finished_at: Mapped[datetime | None]
+    outcome: Mapped[str | None]
+    error: Mapped[str | None]
 
 
 class DeadLetter(OrgMixin, Base):
