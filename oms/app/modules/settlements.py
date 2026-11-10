@@ -74,7 +74,8 @@ def expect_bank_receipt(session: Session, org_id, legal_entity_id, kind: str, to
         return
     reconciliation.expect(session, org_id, "bank_payout", f"{kind}:{token}", amount, portfolio_id=portfolio_id,
                           platform_account_id=platform_account_id,
-                          evidence={"token": token, "legal_entity_id": str(legal_entity_id) if legal_entity_id else None,
+                          evidence={"token": token, "currency": "IDR",  # all provider payouts are IDR (G-ADS1/FX)
+                                    "legal_entity_id": str(legal_entity_id) if legal_entity_id else None,
                                     "sources": [list(x) for x in sources]})
 
 

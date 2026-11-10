@@ -121,3 +121,62 @@ def test_the_same_idempotency_key_in_two_organizations_executes_in_each():
     assert external_ops.execute(a.org_id, "biteship", "create_order", "grp-shared-key", call("a"))["ref"] == "REF-a"
     assert external_ops.execute(b.org_id, "biteship", "create_order", "grp-shared-key", call("b"))["ref"] == "REF-b"
     assert calls == ["a", "b"]
+
+
+# --- Round 2 / P1-4: deterministic provider payout matching ------------------------------------------------------
+
+
+def test_payout_token_must_match_as_a_whole_reference(tenant):
+    w = build_world(tenant)
+    pid, amount = _paid_order(tenant, w)
+    _disburse(tenant, w.wa_account, "PO-1", pid, amount)
+    assert _import_and_match(tenant, _bank(tenant, tenant.legal_entity_id), amount, "DOKU PO-10", "tok") == (1, 0)
+    assert [r.status for r in _payout_items(tenant)] == ["open"]
+
+
+def test_payout_in_another_currency_than_the_bank_entity_is_never_matched(tenant):
+    w = build_world(tenant)
+    pid, amount = _paid_order(tenant, w)
+    _disburse(tenant, w.wa_account, "PO-CUR", pid, amount)
+    with owner_session() as s:
+        s.execute(text("update legal_entities set base_currency = 'USD' where id = :l"), {"l": tenant.legal_entity_id})
+    assert _import_and_match(tenant, _bank(tenant, tenant.legal_entity_id), amount, "DOKU PO-CUR", "cur") == (1, 0)
+
+
+def test_ambiguous_payout_is_resolved_by_an_operator_with_approval_and_audit(tenant):
+    from app.models.finance import BankStatementLine
+    from app.modules import approvals
+
+    w = build_world(tenant)
+    owner = principal(tenant, "owner")
+    with tenant_session(tenant.org_id, owner.user_id) as s:
+        second = platforms.register_account(s, owner, provider="doku", provider_account_id="MCH-9",
+                                            display_name="DOKU merchant 9", role="payments",
+                                            portfolio_ids=[tenant.portfolios["A"]], brand_id=tenant.brand_id)
+        second.legal_entity_id = tenant.legal_entity_id
+        second_id = second.id
+    (p1, a1), (p2, a2) = _paid_order(tenant, w), _paid_order(tenant, w)
+    _disburse(tenant, w.wa_account, "PO-AMB", p1, a1)
+    _disburse(tenant, second_id, "PO-AMB", p2, a2)
+    bank = _bank(tenant, tenant.legal_entity_id)
+    assert _import_and_match(tenant, bank, a1, "DOKU PO-AMB", "amb1") == (1, 0)
+    with owner_session() as s:
+        line_id = s.scalars(select(BankStatementLine.id).where(BankStatementLine.bank_account_id == bank)).one()
+        item_id = s.execute(text("select id from reconciliation_items where organization_id = :o and kind = "
+                                 "'bank_payout' and platform_account_id = :a"),
+                            {"o": tenant.org_id, "a": second_id}).scalar()
+    fin = principal(tenant, "finance")
+    with tenant_session(tenant.org_id, fin.user_id) as s:
+        aid = approvals.request_approval(s, fin, kind="variance_acceptance", subject_type="bank_statement_line",
+                                         subject_id=str(line_id), amount=a1, payload={"item": str(item_id)},
+                                         portfolio_id=None, idempotency_key=f"res-{line_id}").id
+    with tenant_session(tenant.org_id, owner.user_id) as s:
+        approvals.decide(s, owner, aid, True, "merchant 9 statement confirms it")
+    with tenant_session(tenant.org_id, fin.user_id) as s:
+        payments.resolve_bank_match(s, fin, line_id, item_id, aid)
+    rows = {r.platform_account_id: r.status for r in _payout_items(tenant)}
+    assert rows == {second_id: "matched", w.wa_account: "open"}
+    assert _gl("1050", organization_id=tenant.org_id) == a2  # only the resolved payout became verified cash
+    with owner_session() as s:
+        assert s.execute(text("select count(*) from audit_logs where action = 'bank_match.resolved' and "
+                              "entity_id = :l"), {"l": str(line_id)}).scalar() == 1

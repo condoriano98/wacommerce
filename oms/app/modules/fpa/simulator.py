@@ -10,7 +10,10 @@ after each channel's settlement delay, net of channel fees; returns refund the o
 
 Owned inventory (remediation D2) is modelled at cost, week by week:
 
-* opening stock = ``opening_inventory`` (default: ``inventory_buy``, paid in week 0);
+* ``opening_inventory`` is stock already owned at the start of the horizon: no cash (it was paid before);
+* ``inventory_buy`` is a **new** purchase placed in week 0: it arrives after ``initial_lead_time_weeks`` (default 0)
+  and is paid ``supplier_payment_lag_weeks`` after ordering (supplier credit = stock before payment) — round 2, P1-5;
+* open purchase commitments (ordered, not received) and supplier payables (received, not paid) are reported weekly;
 * owned demand is served only up to the stock on hand — the rest is a **stockout** (lost sales: no revenue, no COGS;
   the ad spend that produced the demand is still spent);
 * when stock + open purchase orders fall below the expected demand over ``lead_time_weeks + safety_stock_weeks``,
@@ -25,7 +28,7 @@ import json
 from dataclasses import asdict, dataclass, field, replace
 from decimal import ROUND_HALF_UP, Decimal
 
-ENGINE_VERSION = "sim-1.1"  # 1.1: inventory-aware owned stock (remediation D2)
+ENGINE_VERSION = "sim-1.2"  # 1.1 inventory-aware stock (D2); 1.2 opening stock vs new purchases (round 2, P1-5)
 MONTE_CARLO_ENABLED = False
 Z = Decimal("0")
 ONE = Decimal("1")
@@ -56,7 +59,8 @@ class PortfolioInputs:
     sell_through_factor: Decimal = ONE  # S6 (owned-stock demand)
     outage: tuple[str, int, int] | None = None  # S8: (channel, first week, weeks)
     # Owned inventory (D2): stock at cost, replenishment and carrying cost.
-    opening_inventory: Decimal | None = None  # stock at cost in week 0 (default: inventory_buy)
+    opening_inventory: Decimal = Z  # stock at cost already owned in week 0 (paid before the horizon: no cash)
+    initial_lead_time_weeks: int = 0  # arrival of the week-0 ``inventory_buy``
     replenish: bool = True
     lead_time_weeks: int = 2
     safety_stock_weeks: Decimal = ONE
@@ -82,6 +86,8 @@ class PortfolioResult:
     inventory_closing: list[Decimal] = field(default_factory=list)
     purchases: list[tuple[int, Decimal]] = field(default_factory=list)  # (order week, cost)
     lost_sales: Decimal = Z  # value of owned demand not served (stockouts)
+    open_commitments: list[Decimal] = field(default_factory=list)  # ordered, not yet received (end of week)
+    payables: list[Decimal] = field(default_factory=list)  # received, not yet paid (end of week)
     stockout_weeks: list[int] = field(default_factory=list)
     carrying_cost: Decimal = Z
     revenue: Decimal = Z
@@ -115,9 +121,15 @@ def _portfolio(p: PortfolioInputs, weeks: int, actual: dict[int, dict] | None) -
     inflows = [Z] * (weeks + 60)
     outflows = [Z] * (weeks + 60)
     arrivals = [Z] * (weeks + 60)
-    outflows[0] += p.inventory_buy
+    po_log: list[tuple[int, int, Decimal]] = []  # (arrival week, payment week, cost)
+    if p.inventory_buy:
+        arrive, pay = p.initial_lead_time_weeks, p.supplier_payment_lag_weeks
+        arrivals[arrive] += p.inventory_buy
+        outflows[pay] += p.inventory_buy
+        po_log.append((arrive, pay, p.inventory_buy))
+        r.purchases.append((0, p.inventory_buy))
     r.committed = p.inventory_buy
-    stock = p.inventory_buy if p.opening_inventory is None else p.opening_inventory
+    stock = p.opening_inventory
     for w in range(weeks):
         opening = stock + arrivals[w]
         receipts = arrivals[w]
@@ -133,6 +145,8 @@ def _portfolio(p: PortfolioInputs, weeks: int, actual: dict[int, dict] | None) -
             outflows[w] += Decimal(a.get("cash_out", "0"))
             stock = opening
             r.inventory_closing.append(stock)
+            r.open_commitments.append(sum((c for arr, _, c in po_log if arr > w), Z))
+            r.payables.append(sum((c for arr, pay, c in po_log if arr <= w < pay), Z))
             continue
         base_orders = p.weekly_ad_spend / p.cpa * p.conversion_factor
         owned_demand = base_orders * p.owned_share * p.sell_through_factor
@@ -164,7 +178,7 @@ def _portfolio(p: PortfolioInputs, weeks: int, actual: dict[int, dict] | None) -
         closing = opening - owned_cogs
         if closing < 0:  # cannot happen: demand is capped by stock
             raise AssertionError(f"negative inventory in week {w}")
-        if (stock + receipts - owned_cogs) != closing:
+        if (stock + receipts - owned_cogs) != closing or opening != stock + receipts:
             raise AssertionError(f"inventory identity broken in week {w}")
         carrying = p.carrying_cost_rate_weekly * (opening + closing) / 2
         cm2 -= carrying
@@ -179,10 +193,13 @@ def _portfolio(p: PortfolioInputs, weeks: int, actual: dict[int, dict] | None) -
             po = expected * p.reorder_cover_weeks
             arrivals[w + p.lead_time_weeks] += po
             outflows[w + p.supplier_payment_lag_weeks] += po
+            po_log.append((w + p.lead_time_weeks, w + p.supplier_payment_lag_weeks, po))
             r.purchases.append((w, po))
             r.committed += po
         stock = closing
         r.inventory_closing.append(stock)
+        r.open_commitments.append(sum((c for arr, _, c in po_log if arr > w), Z))
+        r.payables.append(sum((c for arr, pay, c in po_log if arr <= w < pay), Z))
         cm2 -= p.weekly_ad_spend
         outflows[w] += p.weekly_ad_spend + p.fixed_opex_weekly
         r.committed += p.weekly_ad_spend
@@ -217,6 +234,8 @@ def run(inputs: SimInputs, actual_weeks: dict[str, dict[int, dict]] | None = Non
             "cm2": _q(sum((r.cm2 for r in results), Z)),
             "operating_profit": _q(sum((r.operating_profit for r in results), Z)),
             "cash_path": [_q(c) for c in path],
+            "opening_cash": _q(inputs.opening_cash),
+            "net_cash_flow": _q(sum((r.weekly_cash_flow[w] for r in results for w in range(inputs.weeks)), Z)),
             "min_cash": _q(min_cash), "min_cash_week": min_week,
             "reserve": _q(inputs.reserve), "reserve_breach_week": shortfall,
         },
@@ -228,6 +247,8 @@ def run(inputs: SimInputs, actual_weeks: dict[str, dict[int, dict]] | None = Non
             "inventory_closing": [_q(v) for v in r.inventory_closing],
             "inventory_purchases": [{"week": wk, "cost": _q(v)} for wk, v in r.purchases],
             "lost_sales": _q(r.lost_sales), "stockout_weeks": r.stockout_weeks,
+            "open_purchase_commitments": [_q(v) for v in r.open_commitments],
+            "supplier_payables": [_q(v) for v in r.payables],
             "carrying_cost": _q(r.carrying_cost),
         } for r in results},
     }

@@ -276,38 +276,84 @@ def match_bank_lines(session: Session, principal: Principal) -> int:
     return matched
 
 
+def _payout_fits(item, line, entity) -> bool:
+    """Deterministic payout evidence check (round 2, P1-4): same legal entity, same currency as the entity's bank
+    (expectations without a currency are IDR), exact amount, token present as a whole normalised reference."""
+    return (item.evidence.get("legal_entity_id") == (str(entity.id) if entity else None)
+            and (item.evidence.get("currency") or "IDR") == (entity.base_currency if entity else None)
+            and item.expected_amount == line.amount
+            and contains_ref(line.reference, item.evidence.get("token")))
+
+
+def _apply_payout_receipt(session: Session, principal: Principal, line: BankStatementLine, item, ba) -> None:
+    posting.bank_receipt(session, principal.org_id, ba.legal_entity_id, str(line.id),
+                         [tuple(x) for x in item.evidence.get("sources", [])])
+    line.matched_type, line.matched_id = "payout", str(item.id)
+    reconciliation.match_item(session, item, actual_ref=str(line.id), actual_amount=line.amount,
+                              evidence={"bank_line": str(line.id)}, operator_user_id=principal.user_id)
+
+
 def _match_payout_receipts(session: Session, principal: Principal, lines: list[BankStatementLine]) -> int:
-    """Provider payouts (gateway, carrier withdrawal, marketplace, supplier refund) become verified cash only here:
-    a bank credit of the same legal entity, with the payout token in its reference and the exact amount
-    (remediation B5). Each line matches at most one payout; each payout is matched once."""
+    """Provider payouts (gateway, carrier withdrawal, marketplace, supplier refund) become verified cash only here
+    (B5). Exactly one open, non-quarantined payout of the line's organization must fit (``_payout_fits``); several
+    open a ``bank_unmatched`` case for an operator (``resolve_bank_match``) — the first row is never taken."""
     from app.models.finance import ReconciliationItem
-    from app.models.org import BankAccount
+    from app.models.org import BankAccount, LegalEntity
 
     matched = 0
     for line in lines:
         ba = session.get(BankAccount, line.bank_account_id)
-        ref = (line.reference or "").upper()
+        if ba is None or ba.organization_id != line.organization_id:
+            continue
+        entity = session.get(LegalEntity, ba.legal_entity_id) if ba.legal_entity_id else None
         cands = session.scalars(select(ReconciliationItem).where(
             ReconciliationItem.organization_id == line.organization_id, ReconciliationItem.kind == "bank_payout",
             ReconciliationItem.status == "open", ReconciliationItem.identity_quarantined.is_(False),
             ReconciliationItem.expected_amount == line.amount).order_by(ReconciliationItem.id).with_for_update()).all()
-        fits = [c for c in cands if (c.evidence.get("token") or "~").upper() in ref
-                and c.evidence.get("legal_entity_id") == (str(ba.legal_entity_id) if ba.legal_entity_id else None)]
-        if len(fits) > 1:  # e.g. the same payout id on two provider accounts: never pick one (round 2, P0-1)
+        fits = [c for c in cands if _payout_fits(c, line, entity)]
+        if len(fits) > 1:  # e.g. the same payout id on two provider accounts: never pick one
             exceptions.open_case(session, line.organization_id, "bank_unmatched", subject_type="bank_statement_line",
                                  subject_id=str(line.id), context={"reason": "ambiguous payout reference",
                                                                    "candidates": [str(c.id) for c in fits]})
             continue
-        if not fits:
-            continue
-        hit = fits[0]
-        posting.bank_receipt(session, principal.org_id, ba.legal_entity_id, str(line.id),
-                             [tuple(x) for x in hit.evidence.get("sources", [])])
-        line.matched_type, line.matched_id = "payout", str(hit.id)
-        reconciliation.match_item(session, hit, actual_ref=str(line.id), actual_amount=line.amount,
-                                  evidence={"bank_line": str(line.id)}, operator_user_id=principal.user_id)
-        matched += 1
+        if fits:
+            _apply_payout_receipt(session, principal, line, fits[0], ba)
+            matched += 1
     return matched
+
+
+def resolve_bank_match(session: Session, principal: Principal, line_id: uuid.UUID, item_id: uuid.UUID,
+                       approval_id: uuid.UUID) -> None:
+    """A finance operator assigns an ambiguous bank line to one payout expectation (round 2, P1-4). Requires an
+    approved ``variance_acceptance`` for the line (approver ≠ requester); the same entity, currency and amount checks
+    apply; the decision is audited and the ambiguity case resolved."""
+    from app.core.audit import audit
+    from app.models.finance import ReconciliationItem
+    from app.models.governance import ExceptionCase
+    from app.models.org import BankAccount, LegalEntity
+    from app.modules import approvals
+
+    principal.require("finance.manage")
+    approvals.require_approved(session, approval_id, "variance_acceptance", str(line_id))
+    line = session.get(BankStatementLine, line_id, with_for_update=True)
+    item = session.get(ReconciliationItem, item_id, with_for_update=True)
+    if line is None or item is None or line.organization_id != principal.org_id \
+            or item.organization_id != principal.org_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "bank line or payout not found")
+    if line.matched_id is not None or item.status != "open" or item.kind != "bank_payout" or item.identity_quarantined:
+        raise HTTPException(status.HTTP_409_CONFLICT, "line already matched or payout not open")
+    ba = session.get(BankAccount, line.bank_account_id)
+    entity = session.get(LegalEntity, ba.legal_entity_id) if ba and ba.legal_entity_id else None
+    if ba is None or not _payout_fits(item, line, entity):
+        raise HTTPException(status.HTTP_409_CONFLICT, "entity, currency, amount or reference do not fit")
+    _apply_payout_receipt(session, principal, line, item, ba)
+    for case in session.scalars(select(ExceptionCase).where(
+            ExceptionCase.subject_type == "bank_statement_line", ExceptionCase.subject_id == str(line.id),
+            ExceptionCase.status.not_in(("resolved", "written_off")))):
+        exceptions.resolve(session, case, actor_user_id=principal.user_id, note=f"assigned to payout {item.id}")
+    audit(session, principal.org_id, "bank_match.resolved", "bank_statement_line", line.id,
+          actor_user_id=principal.user_id, after={"payout": str(item.id), "approval": str(approval_id),
+                                                  "amount": str(line.amount)})
 
 
 def today() -> date:
