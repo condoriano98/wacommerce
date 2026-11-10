@@ -199,7 +199,7 @@ class PaymentEvent(OrgMixin, Base):
 
 class PaymentNotification(OrgMixin, Base):
     __tablename__ = "payment_notifications"
-    __table_args__ = (UniqueConstraint("provider", "notification_id"),)
+    __table_args__ = (UniqueConstraint("organization_id", "provider", "notification_id"),)
     provider: Mapped[str]
     notification_id: Mapped[str]
     payment_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("payments.id"))

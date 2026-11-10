@@ -28,33 +28,68 @@ SLA = {
 TOLERANCE = Decimal("0.00")
 
 
-def expect(session: Session, org_id, kind: str, ref: str, amount: Decimal, *, portfolio_id=None,
-           expected_at: date | None = None, evidence: dict | None = None) -> None:
+class AmbiguousReference(Exception):
+    """More than one reconciliation item fits a reference: never guess (round 2, P0-1)."""
+
+
+def expect(session: Session, org_id, kind: str, ref: str, amount: Decimal, *, platform_account_id=None,
+           portfolio_id=None, expected_at: date | None = None, evidence: dict | None = None) -> None:
+    """Register an expected money movement. Identity = (organization, kind, provider account, reference): the same
+    provider reference in another organization or on another account is a different item."""
     import uuid
 
     session.execute(insert(ReconciliationItem).values(
         id=uuid.uuid4(), created_at=utcnow(), organization_id=org_id, portfolio_id=portfolio_id, kind=kind,
-        expected_ref=ref, expected_amount=amount, expected_at=expected_at or utcnow().date(), status="open",
-        evidence=evidence or {}).on_conflict_do_nothing(index_elements=["kind", "expected_ref"]))
+        platform_account_id=platform_account_id, expected_ref=ref, expected_amount=amount,
+        expected_at=expected_at or utcnow().date(), status="open", evidence=evidence or {})
+        .on_conflict_do_nothing(constraint="uq_reconciliation_items_identity"))
 
 
-def raise_expectation(session: Session, kind: str, ref: str, amount: Decimal) -> None:
+def find(session: Session, org_id, kind: str, ref: str, *, platform_account_id=None,
+         statuses: tuple[str, ...] | None = None) -> ReconciliationItem | None:
+    """The single item with this identity in this organization. With no account given, an item on any account
+    matches — and more than one candidate raises ``AmbiguousReference``. Quarantined items never match."""
+    stmt = select(ReconciliationItem).where(
+        ReconciliationItem.organization_id == org_id, ReconciliationItem.kind == kind,
+        ReconciliationItem.expected_ref == ref, ReconciliationItem.identity_quarantined.is_(False))
+    if platform_account_id is not None:
+        stmt = stmt.where(ReconciliationItem.platform_account_id == platform_account_id)
+    if statuses:
+        stmt = stmt.where(ReconciliationItem.status.in_(statuses))
+    items = session.scalars(stmt.order_by(ReconciliationItem.id).with_for_update()).all()
+    if len(items) > 1:
+        raise AmbiguousReference(f"{kind}:{ref} matches {len(items)} items")
+    return items[0] if items else None
+
+
+def raise_expectation(session: Session, org_id, kind: str, ref: str, amount: Decimal, *,
+                      platform_account_id=None) -> None:
     """An open expectation grows when more of the same subject becomes due (e.g. a later partial delivery of a
     marketplace order adds to its receivable). Matched or variance items are never rewritten."""
-    item = session.scalars(select(ReconciliationItem).where(
-        ReconciliationItem.kind == kind, ReconciliationItem.expected_ref == ref,
-        ReconciliationItem.status == "open").with_for_update()).first()
+    item = find(session, org_id, kind, ref, platform_account_id=platform_account_id, statuses=("open",))
     if item is not None:
         item.expected_amount = amount
 
 
-def match(session: Session, kind: str, ref: str, *, actual_ref: str, actual_amount: Decimal, evidence: dict,
-          operator_user_id=None) -> ReconciliationItem | None:
-    item = session.scalars(select(ReconciliationItem).where(ReconciliationItem.kind == kind,
-                                                            ReconciliationItem.expected_ref == ref)
-                           .with_for_update()).first()
+def match(session: Session, org_id, kind: str, ref: str, *, actual_ref: str, actual_amount: Decimal, evidence: dict,
+          platform_account_id=None, operator_user_id=None) -> ReconciliationItem | None:
+    try:
+        item = find(session, org_id, kind, ref, platform_account_id=platform_account_id)
+    except AmbiguousReference as exc:
+        from app.modules import exceptions
+
+        exceptions.open_case(session, org_id, "manual_review", subject_type="reconciliation_ref",
+                             subject_id=f"{kind}:{ref}", context={"reason": str(exc), "actual_ref": actual_ref,
+                                                                 "actual_amount": str(actual_amount)})
+        return None
     if item is None:
         return None
+    return match_item(session, item, actual_ref=actual_ref, actual_amount=actual_amount, evidence=evidence,
+                      operator_user_id=operator_user_id)
+
+
+def match_item(session: Session, item: ReconciliationItem, *, actual_ref: str, actual_amount: Decimal, evidence: dict,
+               operator_user_id=None) -> ReconciliationItem:
     item.actual_ref, item.actual_amount = actual_ref, actual_amount
     item.difference = actual_amount - item.expected_amount
     item.evidence = {**item.evidence, **evidence}

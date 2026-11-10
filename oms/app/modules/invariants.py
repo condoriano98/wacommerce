@@ -87,6 +87,9 @@ CHECKS = {
         "join portfolios p on p.id = le.portfolio_id join brands b on b.id = p.brand_id "
         "where le.legal_entity_id is not null and b.legal_entity_id is not null "
         "and le.legal_entity_id <> b.legal_entity_id",
+    # Round 2 / P0-1: legacy expectations whose provider account could not be proven need a human mapping.
+    "reconciliation_identity_quarantined":
+        "select id::text as ref, expected_amount as amount from reconciliation_items where identity_quarantined",
     # A1: an operation claimed more than an hour ago and never finished needs a human (lookup or uncertain).
     "stale_sent_external_operations":
         "select id::text as ref, 0 as amount from external_operations "

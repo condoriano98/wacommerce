@@ -85,9 +85,10 @@ def prepare(org_id: uuid.UUID, provider: str, operation: str, key: str, *, summa
             id=uuid.uuid4(), created_at=utcnow(), organization_id=org_id, platform_account_id=platform_account_id,
             provider=provider, operation=operation, idempotency_key=key, status="prepared",
             request_summary=summary or {}, attempts=0, response={}, subject_type=subject_type, subject_id=subject_id,
-        ).on_conflict_do_nothing(index_elements=["provider", "operation", "idempotency_key"]))
+        ).on_conflict_do_nothing(index_elements=["organization_id", "provider", "operation", "idempotency_key"]))
         op = s.scalars(select(ExternalOperation).where(
-            ExternalOperation.provider == provider, ExternalOperation.operation == operation,
+            ExternalOperation.organization_id == org_id, ExternalOperation.provider == provider,
+            ExternalOperation.operation == operation,
             ExternalOperation.idempotency_key == key)).one()
         return _view(op)
 

@@ -40,12 +40,13 @@ def _settlement(session: Session, org_id, account_id, kind: str, external_id: st
 
 
 def expect_bank_receipt(session: Session, org_id, legal_entity_id, kind: str, token: str, amount: Decimal,
-                        sources: list[tuple[str, str]], portfolio_id=None) -> None:
+                        sources: list[tuple[str, str]], portfolio_id=None, platform_account_id=None) -> None:
     """A provider reported a payout (booked to 1050). It becomes verified cash only when a bank statement line of the
     same legal entity, carrying ``token`` in its reference and the exact amount, is matched (remediation B5)."""
     if amount <= 0:
         return
     reconciliation.expect(session, org_id, "bank_payout", f"{kind}:{token}", amount, portfolio_id=portfolio_id,
+                          platform_account_id=platform_account_id,
                           evidence={"token": token, "legal_entity_id": str(legal_entity_id) if legal_entity_id else None,
                                     "sources": [list(x) for x in sources]})
 
@@ -74,12 +75,12 @@ def gateway_disbursement(session: Session, principal: Principal, account_id, ext
     posting.gateway_disbursement(session, principal.org_id, le, str(s.id),
                                  total_net + fees_unbooked, fees_unbooked, platform_account_id=account_id)
     expect_bank_receipt(session, principal.org_id, le, "gateway", external_id, total_net,
-                        [("gateway_disbursement", str(s.id))])
+                        [("gateway_disbursement", str(s.id))], platform_account_id=account_id)
     for pid, net in payments:
         p = session.get(Payment, pid)
         if p.status == "captured":
             p.status = "settled"
-        reconciliation.match(session, "gateway", str(pid), actual_ref=str(s.id), actual_amount=net,
+        reconciliation.match(session, principal.org_id, "gateway", str(pid), actual_ref=str(s.id), actual_amount=net,
                              evidence={"settlement": external_id})
     return s
 
@@ -105,7 +106,7 @@ def cod_remittance(session: Session, principal: Principal, carrier_account_id, r
         session.add(SettlementLine(organization_id=principal.org_id, settlement_id=s.id,
                                    platform_account_id=carrier_account_id, order_id=sh.order_id, shipment_id=sh.id,
                                    line_type="cod_remittance", amount=amt))
-        reconciliation.match(session, "cod", str(sh.id), actual_ref=str(s.id), actual_amount=amt,
+        reconciliation.match(session, principal.org_id, "cod", str(sh.id), actual_ref=str(s.id), actual_amount=amt,
                              evidence={"report": report_id})
     posting.cod_remitted(session, principal.org_id, le, str(s.id), by_portfolio, carrier_account_id)
     return s
@@ -117,7 +118,7 @@ def carrier_withdrawal(session: Session, principal: Principal, carrier_account_i
     posting.carrier_withdrawal(session, principal.org_id, legal_entity_id, withdrawal_id, gross, fee,
                                carrier_account_id)
     expect_bank_receipt(session, principal.org_id, legal_entity_id, "carrier_withdrawal", withdrawal_id, gross - fee,
-                        [("carrier_withdrawal", withdrawal_id)])
+                        [("carrier_withdrawal", withdrawal_id)], platform_account_id=carrier_account_id)
 
 
 def marketplace_payout(session: Session, principal: Principal, account_id, payout_id: str,
@@ -173,13 +174,15 @@ def marketplace_payout(session: Session, principal: Principal, account_id, payou
                                    order_id=order.id, external_order_id=ext, line_type="sale", amount=agg["net"]))
         # Value received (payout + creditable withholding) vs the receivable expected at delivery: a fee above the
         # accrual is booked (true-up) and also surfaces as a variance case for review.
-        reconciliation.match(session, "marketplace", str(order.id), actual_ref=str(s.id),
+        reconciliation.match(session, principal.org_id, "marketplace", str(order.id), actual_ref=str(s.id),
+                             platform_account_id=account_id,
                              actual_amount=agg["net"] + agg["tax"],
                              evidence={"payout": payout_id, "net": str(agg["net"]), "fee": str(agg["fee"]),
                                        "tax_withheld": str(agg["tax"])})
         order.settlement_status = "settled"
         orders.derive_status(session, order)
-    expect_bank_receipt(session, principal.org_id, le, "marketplace", payout_id, paid, sources)
+    expect_bank_receipt(session, principal.org_id, le, "marketplace", payout_id, paid, sources,
+                        platform_account_id=account_id)
     return s
 
 
@@ -193,6 +196,7 @@ def _expect_settlement(session: Session, data: dict) -> None:
             LedgerEntry.order_id == order.id, LedgerEntry.account_code == A.COD_RECEIVABLE,
             LedgerEntry.source_type.in_(("cod_fee", "carrier_cost")), LedgerEntry.source_id == str(sh.id))))
         reconciliation.expect(session, order.organization_id, "cod", str(sh.id), sh.cod_amount - deducted,
+                              platform_account_id=sh.carrier_account_id,
                               portfolio_id=g.portfolio_id)
     elif order.payment_method == "marketplace":
         expected = Decimal(session.scalar(select(func.coalesce(func.sum(LedgerEntry.debit - LedgerEntry.credit), 0))
@@ -201,8 +205,10 @@ def _expect_settlement(session: Session, data: dict) -> None:
         portfolios = {i.portfolio_id for i in orders.items_of(session, order.id)}
         # A multi-portfolio order's settlement is an org-level reconciliation item (not one portfolio's).
         reconciliation.expect(session, order.organization_id, "marketplace", str(order.id), expected,
+                              platform_account_id=order.platform_account_id,
                               portfolio_id=g.portfolio_id if len(portfolios) == 1 else None)
-        reconciliation.raise_expectation(session, "marketplace", str(order.id), expected)
+        reconciliation.raise_expectation(session, order.organization_id, "marketplace", str(order.id), expected,
+                                         platform_account_id=order.platform_account_id)
 
 
 # --- refunds and returns ----------------------------------------------------------------------------------------

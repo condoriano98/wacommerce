@@ -139,8 +139,8 @@ class ReconciliationRun(OrgMixin, Base):
 
 class ReconciliationItem(OrgMixin, Base):
     __tablename__ = "reconciliation_items"
+    # Identity (migration 0025): unique NULLS NOT DISTINCT (organization_id, kind, platform_account_id, expected_ref).
     __table_args__ = (
-        UniqueConstraint("kind", "expected_ref"),
         CheckConstraint("status in ('open','matched','variance','accepted','written_off')"),
     )
     portfolio_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("portfolios.id"), index=True)
@@ -158,3 +158,5 @@ class ReconciliationItem(OrgMixin, Base):
     status: Mapped[str] = mapped_column(default="open")
     exception_case_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("exception_cases.id"))
     resolved_at: Mapped[datetime | None]
+    platform_account_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("platform_accounts.id"))
+    identity_quarantined: Mapped[bool] = mapped_column(default=False)  # legacy item without a provable account

@@ -47,7 +47,20 @@ def test_G_remediation_migrations_round_trip_and_backfill_flags_legacy_duplicate
             _journal(c, org, le, uuid.uuid4(), "cap-1")
             _journal(c, org, le, uuid.uuid4(), "cap-1")
             _journal(c, org, le, uuid.uuid4(), "cap-2")
+        command.upgrade(cfg, "0024")
+        with eng.begin() as c:  # a legacy payout expectation whose provider account cannot be proven
+            c.execute(text("insert into reconciliation_items (id, organization_id, created_at, kind, expected_ref, "
+                           "expected_amount, expected_at, evidence, status) values (gen_random_uuid(), :o, now(), "
+                           "'bank_payout', 'gateway:PO-LEGACY', 100, current_date, '{\"token\": \"PO-LEGACY\"}', "
+                           "'open')"), {"o": org})
         command.upgrade(cfg, "head")
+        with eng.connect() as c:  # round 2 (0025): quarantined, not guessed, not deleted; old global key gone
+            assert c.execute(text("select identity_quarantined, platform_account_id from reconciliation_items "
+                                  "where expected_ref = 'gateway:PO-LEGACY'")).one() == (True, None)
+            names = {r[0] for r in c.execute(text("select conname from pg_constraint "
+                                                  "where conrelid = 'reconciliation_items'::regclass"))}
+            assert "uq_reconciliation_items_identity" in names
+            assert "reconciliation_items_kind_expected_ref_key" not in names
         with eng.connect() as c:
             rows = c.execute(text("select source_id, legacy_duplicate from journals order by source_id, "
                                   "legacy_duplicate")).all()
@@ -59,7 +72,10 @@ def test_G_remediation_migrations_round_trip_and_backfill_flags_legacy_duplicate
             assert c.execute(text("select count(*) from ledger_entries")).scalar() == 6
         command.upgrade(cfg, "head")
         with eng.connect() as c:
-            assert c.execute(text("select version_num from alembic_version")).scalar() == "0024"
+            from alembic.script import ScriptDirectory
+
+            head = ScriptDirectory.from_config(cfg).get_current_head()
+            assert c.execute(text("select version_num from alembic_version")).scalar() == head
             assert c.execute(text("select count(*) from journals where legacy_duplicate")).scalar() == 1
     finally:
         eng.dispose()

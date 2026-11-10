@@ -151,7 +151,7 @@ class ExternalOperation(OrgMixin, Base):
 
     __tablename__ = "external_operations"
     __table_args__ = (
-        UniqueConstraint("provider", "operation", "idempotency_key"),
+        UniqueConstraint("organization_id", "provider", "operation", "idempotency_key"),
         CheckConstraint("status in ('prepared','sent','confirmed','uncertain','failed')"),
     )
     platform_account_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("platform_accounts.id"))

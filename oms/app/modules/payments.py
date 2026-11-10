@@ -93,7 +93,7 @@ def record_gateway_notification(session: Session, *, provider: str, notification
     res = session.execute(insert(PaymentNotification).values(
         id=uuid.uuid4(), created_at=utcnow(), organization_id=p.organization_id, provider=provider,
         notification_id=notification_id, payment_id=p.id, raw=raw, verified=True)
-        .on_conflict_do_nothing(index_elements=["provider", "notification_id"])
+        .on_conflict_do_nothing(index_elements=["organization_id", "provider", "notification_id"])
         .returning(PaymentNotification.id)).scalar()
     if res is None:  # duplicate notification
         return "duplicate"
@@ -113,7 +113,7 @@ def record_gateway_notification(session: Session, *, provider: str, notification
     if fee:
         posting.gateway_fee(session, order, p, fee)
     reconciliation.expect(session, order.organization_id, "gateway", str(p.id), verified_amount - (fee or 0),
-                          portfolio_id=_portfolio(session, order))
+                          platform_account_id=order.platform_account_id, portfolio_id=_portfolio(session, order))
     events.emit(session, "payment_captured", order=order, payment=p)
     events.emit(session, "payment_released", order=order, payment=p, basis="captured")
     orders.derive_status(session, order)
@@ -223,7 +223,8 @@ def match_bank_lines(session: Session, principal: Principal) -> int:
             if allowance > 0:
                 posting.credit_loss(session, order, item, allowance, "release", f"bankmatch:{hit.id}:{item.id}")
         posting.payment_bank_matched(session, order, hit, line.amount)
-        reconciliation.match(session, "bank_manual", str(hit.id), actual_ref=str(line.id), actual_amount=line.amount,
+        reconciliation.match(session, order.organization_id, "bank_manual", str(hit.id), actual_ref=str(line.id),
+                             actual_amount=line.amount,
                              evidence={"bank_line": str(line.id), "reference": line.reference})
         order.payment_status = "bank_matched"
         events.emit(session, "payment_bank_matched", order=order, payment=hit)
@@ -247,19 +248,24 @@ def _match_payout_receipts(session: Session, principal: Principal, lines: list[B
         ba = session.get(BankAccount, line.bank_account_id)
         ref = (line.reference or "").upper()
         cands = session.scalars(select(ReconciliationItem).where(
-            ReconciliationItem.kind == "bank_payout", ReconciliationItem.status == "open",
-            ReconciliationItem.expected_amount == line.amount).with_for_update()).all()
-        hit = next((c for c in cands if (c.evidence.get("token") or "~").upper() in ref
-                    and c.evidence.get("legal_entity_id") == (str(ba.legal_entity_id) if ba.legal_entity_id else None)),
-                   None)
-        if hit is None:
+            ReconciliationItem.organization_id == line.organization_id, ReconciliationItem.kind == "bank_payout",
+            ReconciliationItem.status == "open", ReconciliationItem.identity_quarantined.is_(False),
+            ReconciliationItem.expected_amount == line.amount).order_by(ReconciliationItem.id).with_for_update()).all()
+        fits = [c for c in cands if (c.evidence.get("token") or "~").upper() in ref
+                and c.evidence.get("legal_entity_id") == (str(ba.legal_entity_id) if ba.legal_entity_id else None)]
+        if len(fits) > 1:  # e.g. the same payout id on two provider accounts: never pick one (round 2, P0-1)
+            exceptions.open_case(session, line.organization_id, "bank_unmatched", subject_type="bank_statement_line",
+                                 subject_id=str(line.id), context={"reason": "ambiguous payout reference",
+                                                                   "candidates": [str(c.id) for c in fits]})
             continue
+        if not fits:
+            continue
+        hit = fits[0]
         posting.bank_receipt(session, principal.org_id, ba.legal_entity_id, str(line.id),
                              [tuple(x) for x in hit.evidence.get("sources", [])])
         line.matched_type, line.matched_id = "payout", str(hit.id)
-        reconciliation.match(session, "bank_payout", hit.expected_ref, actual_ref=str(line.id),
-                             actual_amount=line.amount, evidence={"bank_line": str(line.id)},
-                             operator_user_id=principal.user_id)
+        reconciliation.match_item(session, hit, actual_ref=str(line.id), actual_amount=line.amount,
+                                  evidence={"bank_line": str(line.id)}, operator_user_id=principal.user_id)
         matched += 1
     return matched
 
