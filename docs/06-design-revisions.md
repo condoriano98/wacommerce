@@ -1,5 +1,8 @@
 # 06 — Design Revisions after Architecture Review (2026-11-10)
 
+> **Superseded by V3.1** (`00-plan.md`, delta table in `24-v31-delta-and-summary.md`). R1–R5 are integrated there; where
+> this file differs (e.g. R2 cash/capital wording, BYPASSRLS mention), V3.1 wins. Kept for history.
+
 Five weaknesses were raised in review. Each revision below supersedes the earlier text in `00-plan.md` / `03-architecture.md`.
 
 ---

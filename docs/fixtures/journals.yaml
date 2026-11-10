@@ -1,0 +1,59 @@
+# V3.1 journal fixtures (docs/11-accounting-policy.md). Amounts in IDR. Each journal must balance.
+# Used in M1 as executable test data: posting rules must produce exactly these lines for the given events.
+fixtures:
+  F1_prepaid_whatsapp_doku:
+    - {event: payment_captured, lines: [[1010, 205000, 0], [2200, 0, 205000]]}
+    - {event: gateway_fee_known_at_capture, lines: [[5200, 1435, 0], [1010, 0, 1435]]}
+    - {event: picked_by_carrier, lines: [[1250, 120000, 0], [1200, 0, 120000]]}
+    - {event: carrier_cost_incurred, lines: [[5100, 12000, 0], [2010, 0, 12000]]}
+    - {event: delivered, lines: [[2200, 205000, 0], [4000, 0, 190000], [4100, 0, 15000]]}
+    - {event: delivered_cogs, lines: [[5000, 120000, 0], [1250, 0, 120000]]}
+    - {event: gateway_disbursement, lines: [[1000, 203565, 0], [1010, 0, 203565]]}
+  F2_cod_biteship:
+    - {event: picked_by_carrier, lines: [[1250, 90000, 0], [1200, 0, 90000]]}
+    - {event: delivered, lines: [[1100, 165000, 0], [4000, 0, 150000], [4100, 0, 15000]]}
+    - {event: delivered_cogs, lines: [[5000, 90000, 0], [1250, 0, 90000]]}
+    - {event: cod_fee_accrued, lines: [[5200, 4950, 0], [1100, 0, 4950]]}
+    - {event: carrier_shipping_deducted, lines: [[5100, 12000, 0], [1100, 0, 12000]]}
+    - {event: cod_remitted_to_carrier_balance, lines: [[1020, 148050, 0], [1100, 0, 148050]]}
+    - {event: carrier_withdrawal_to_bank, lines: [[1000, 145550, 0], [5200, 2500, 0], [1020, 0, 148050]]}
+  F3_manual_transfer:
+    - {event: receipt_reported, lines: []}
+    - {event: finance_attested_with_bank_ref, lines: [[1000, 115000, 0], [2200, 0, 115000]]}
+    - {event: delivered, lines: [[2200, 115000, 0], [4000, 0, 100000], [4100, 0, 15000]]}
+  F4_marketplace_shopee:
+    - {event: delivered, lines: [[1110, 240000, 0], [4000, 0, 240000]]}
+    - {event: expected_fee_accrued, lines: [[5300, 19200, 0], [1110, 0, 19200]]}
+    - {event: settlement_payout, lines: [[1000, 218800, 0], [5300, 800, 0], [1400, 1200, 0], [1110, 0, 220800]]}
+  F5_dropship_prepaid:
+    - {event: payment_captured, lines: [[1010, 165000, 0], [2200, 0, 165000]]}
+    - {event: supplier_purchase_paid, lines: [[1210, 100000, 0], [1000, 0, 100000]]}
+    - {event: delivered, lines: [[2200, 165000, 0], [4000, 0, 150000], [4100, 0, 15000]]}
+    - {event: delivered_cogs, lines: [[5000, 100000, 0], [1210, 0, 100000]]}
+  F6_partial_fulfilment:
+    - {event: payment_captured, lines: [[1010, 315000, 0], [2200, 0, 315000]]}
+    - {event: line1_delivered, lines: [[2200, 205000, 0], [4000, 0, 190000], [4100, 0, 15000]]}
+    - {event: line2_canceled_before_shipment, lines: [[2200, 110000, 0], [2100, 0, 110000]]}
+    - {event: refund_paid, lines: [[2100, 110000, 0], [1000, 0, 110000]]}
+  F7_refund_allowance:
+    - {event: refund_approved_after_delivery, lines: [[4900, 20000, 0], [2100, 0, 20000]]}
+    - {event: refund_paid, lines: [[2100, 20000, 0], [1000, 0, 20000]]}
+  F8_return_resellable:
+    - {event: return_refund_approved, lines: [[4900, 100000, 0], [2100, 0, 100000]]}
+    - {event: restocked_at_cost, lines: [[1200, 60000, 0], [5000, 0, 60000]]}
+    - {event: return_shipping, lines: [[5500, 12000, 0], [2010, 0, 12000]]}
+  F9_settlement_fee_deduction:
+    - {event: gateway_disbursement_with_fee, lines: [[1000, 203565, 0], [5200, 1435, 0], [1010, 0, 205000]]}
+  F10_failed_delivery_rts:
+    - {event: picked_by_carrier, lines: [[1250, 60000, 0], [1200, 0, 60000]]}
+    - {event: returned_to_warehouse, lines: [[1200, 60000, 0], [1250, 0, 60000]]}
+    - {event: shipping_and_return_cost, lines: [[5100, 12000, 0], [5500, 12000, 0], [2010, 0, 24000]]}
+  F11_supplier_cancellation:
+    - {event: supplier_purchase_paid, lines: [[1210, 100000, 0], [1000, 0, 100000]]}
+    - {event: supplier_canceled, lines: [[1120, 100000, 0], [1210, 0, 100000]]}
+    - {event: supplier_refund_received, lines: [[1000, 100000, 0], [1120, 0, 100000]]}
+  F12_ad_spend_restatement:
+    - {event: daily_accrual_portfolio_A, lines: [[6000, 500000, 0], [2020, 0, 500000]]}
+    - {event: daily_accrual_unallocated, lines: [[6000, 120000, 0], [2020, 0, 120000]]}
+    - {event: repull_delta_positive, lines: [[6000, 15000, 0], [2020, 0, 15000]]}
+    - {event: card_charge, lines: [[2020, 635000, 0], [1000, 0, 635000]]}

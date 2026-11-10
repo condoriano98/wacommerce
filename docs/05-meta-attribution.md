@@ -40,6 +40,9 @@ Send-time eligibility (re-evaluated by the worker, not at enqueue): event in the
 hashed fallback allowed) ∧ consent for purpose `meta_ad_measurement` ∧ `event_time` ≤ 7 days old. Otherwise the row
 becomes `suppressed` (no consent / not supported) or `expired` (too old). Retries reuse the same `event_id`.
 
+> V3.1 alignment: COD `Purchase` is sent at delivery, the same moment revenue is recognised (`11-accounting-policy.md`);
+> COD remittance only clears the receivable and does not trigger or delay conversion events.
+
 ## Measurement separation
 `meta_reported` (Insights `actions`) · `internally_attributed` (orders via frozen touch) · `financially_realized`
 (delivered + collected/settled revenue). FP&A never treats Meta-reported conversions as sales.

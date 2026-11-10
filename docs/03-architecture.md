@@ -1,93 +1,52 @@
-# 03 — System Architecture (multi-portfolio, multi-platform)
+# 03 — Architecture Overview (V3.1)
+
+> Source of truth: `docs/00-plan.md` §1–§4. Supersedes the V3.0 version of this file, including the Chatwoot
+> WhatsApp-inbox proxy design (contradiction C1).
+
+## Purpose
+A modular-monolith operating system that lets one founder run several e-commerce portfolios from a constrained capital
+pool, optimising **risk-adjusted contribution, capital productivity, cash conversion, reliability and liquidity**.
 
 ## Layers
 
 ```mermaid
 flowchart TB
-    A["Central Ecommerce Portfolio Manager<br/>(Next.js + Refine dashboard)"]
-    A --> B["Portfolio A — FMCG"]
-    A --> C["Portfolio B — Product category"]
-    A --> D["Portfolio N — Experiments"]
-    B & C & D --> E["Platform Account Registry<br/>(advertising · sales · messaging · procurement · shipping · payments)"]
-    E --> F["Meta Ads / WhatsApp"]
-    E --> G["Shopee / Tokopedia & Shop"]
-    E --> H["TikTok Shop / Lazada"]
-    E --> I["Google Ads / Organic"]
-    F & G & H & I --> J["Unified OMS (FastAPI + PostgreSQL)"]
-    J --> K{"Fulfillment Router"}
-    K --> L["Owned stock — Biteship"]
-    K --> M["Dropship — Procurement copilot (human)"]
-    K --> PM["Platform-managed (marketplace native)"]
-    L & M & PM --> N["Settlement & Double-entry Ledger"]
-    O["Ad spend + attribution"] --> P["Portfolio FP&A"]
-    N --> P
-    P --> Q["Capital allocation / risk controls<br/>(recommend-only + approvals)"]
-    Q -.-> A
+    PM["Portfolio & Capital Manager<br/>(mandates, commitments, approvals)"]
+    PM --> P1["Portfolio A"] & P2["Portfolio B"] & PN["Portfolio N"]
+    P1 & P2 & PN --> REG["Platform accounts + Integration Capability Registry"]
+    REG --> WA["WhatsApp (Meta CTWA)"] & MP["Shopee · Tokopedia & Shop / TikTok Shop · Lazada"] & ADS["Meta · Google · TikTok · marketplace ads"]
+    WA & MP --> OMS["Unified OMS<br/>orders · items · fulfillment groups"]
+    OMS --> RT{"Router (per fulfillment group)"}
+    RT --> A["Engine A: owned stock → Biteship (COD)"]
+    RT --> B["Engine B: human-operated dropship (copilot)"]
+    RT --> PMF["Platform-managed fulfilment"]
+    A & B & PMF --> LED["Double-entry ledger (accrual, periods)"]
+    PAY["DOKU · manual transfer · COD · marketplace payouts"] --> REC["Reconciliation (expected vs actual, evidence, ageing)"]
+    REC --> LED
+    ADS --> FPA["FP&A: CM1–CM3, cash forecast, simulator"]
+    LED --> FPA
+    FPA --> REC2["Advisory recommendations → human approvals"]
+    REC2 -.-> PM
 ```
 
-## Runtime components
+## Runtime components (Sumopod)
 
-| Component | Responsibility | Source of truth for |
+| Component | Responsibility | Authoritative for |
 |---|---|---|
-| `oms-api` (FastAPI) | REST API, webhooks, RBAC, domain logic | Everything transactional |
-| `oms-worker` | Outbox dispatcher (`FOR UPDATE SKIP LOCKED`), scheduled syncs | — |
-| PostgreSQL 16 | Tenant-scoped data, RLS | Orders, customers, ledger, attribution |
-| Chatwoot | Shared inbox, human handoff | Conversation UI only |
-| n8n | AI Sales Admin, notifications, schedules | Nothing (stateless orchestration) |
-| Metabase | Analytics on read-only views | — |
-| Dashboard (Next.js + Refine) | Operations + approvals UI | — |
+| `oms-api` (FastAPI) | REST API, webhook receivers, commands, RBAC | — (stateless) |
+| `oms-worker` (Procrastinate) | outbox relay, provider sync, CAPI, reconciliation, periodic jobs | — |
+| PostgreSQL 16 | all business, financial, attribution data; RLS | **System of record** |
+| Chatwoot (web + Sidekiq + Redis + object storage) | API-channel shared inbox, human handoff UI | Nothing financial |
+| n8n | AI Sales Admin orchestration, notifications, schedules | Nothing (calls OMS commands) |
+| Next.js + Refine dashboard | operations, approvals, finance UI | — |
+| Metabase | read-only analytics on views | — |
 
-## WhatsApp / Chatwoot / n8n topology
+## WhatsApp topology (single owner)
+Meta → OMS webhook (persist raw event, commit, 200) → processing job → Chatwoot API-channel mirror → Agent Bot → n8n →
+OMS policy-checked commands → OMS send → Meta. Human replies from Chatwoot reach Meta only through OMS send commands;
+mirror echoes are suppressed. Details: `13-whatsapp-api-channel.md`.
 
-> **Superseded by `06-design-revisions.md` R1.** The OMS is now the single WhatsApp gateway and Chatwoot uses an API-channel
-> inbox, so nothing competes for Meta's callback. The original proxy design is kept below for the record only.
-
-### (Superseded) proxy design — verified against Chatwoot v4.19.1 source
-
-```mermaid
-sequenceDiagram
-    participant Meta as Meta Cloud API
-    participant OMS as OMS /webhooks/whatsapp
-    participant OB as Outbox worker
-    participant CW as Chatwoot
-    participant N8N as n8n AI Sales Admin
-    Meta->>OMS: POST raw bytes + X-Hub-Signature-256
-    OMS->>OMS: verify HMAC on raw bytes, store raw, resolve BSUID/phone, capture referral
-    OMS-->>Meta: 200 (fast)
-    OMS->>OB: outbox row (forward_chatwoot)
-    OB->>CW: identical bytes + same signature header
-    CW->>N8N: Agent Bot webhook (X-Chatwoot-Signature)
-    N8N->>OMS: tools: catalog, quote, create order, payment link
-    N8N->>CW: reply / private note / toggle_status=open (handoff)
-```
-
-Chatwoot re-registers a phone-number-level webhook override on inbox creation and voice toggles; the OMS reasserts its own
-override on a schedule and raises an integration-health alert on drift.
-
-## Data flows
-
-1. **Lead → order (WhatsApp)**: inbound message → identity + attribution touch → AI quote → order `placed` → `confirmed` →
-   payment (DOKU link / manual transfer / COD) → router → fulfillment → delivered → ledger + conversion events.
-2. **Marketplace native order**: adapter pull/push → `UNIQUE(platform_account_id, external_order_id)` upsert →
-   `PLATFORM_MANAGED` fulfillment → settlement ingestion → reconciliation → ledger.
-3. **Ad spend**: provider insights (daily, 28-day re-pull) → `daily_ad_insights` → campaign→portfolio allocations →
-   FP&A (unallocated spend kept separately).
-4. **Conversions**: order state change → `conversion_outbox` row (unique business key) → worker re-checks eligibility
-   (event supported, consent, ≤7 days, identifiers) → send / suppress / expire → delivery log.
-
-## Tenancy & security
-- Every business row carries `organization_id`; portfolio-scoped rows carry `portfolio_id`.
-- Postgres RLS policies use `current_setting('app.org_id')` set per transaction; the API also filters by portfolios the
-  caller holds a role in (`role_assignments`). The application connects as a non-superuser role so RLS applies.
-- Credentials: `account_credentials.ciphertext` (Fernet); never serialized in API responses or logs.
-- Irreversible actions (paid shipment booking, refunds, capital moves, ad changes, marketplace purchases) require a
-  `human_approvals` row naming the approver and the exact amount/target.
-
-## Architecture decisions
-- **ADR-001 Modular monolith**: one FastAPI app with module boundaries; split only when an operational need appears.
-- **ADR-002 Sync SQLAlchemy 2 + psycopg 3**: simpler transaction/RLS handling; FastAPI runs sync endpoints in a thread pool.
-- **ADR-003 Transactional outbox instead of a separate job queue** (`procrastinate`/Redis dropped): every side effect is
-  written in the same transaction as the business change and delivered by a `SKIP LOCKED` dispatcher with retries.
-- **ADR-004 Mock-first adapters**: each provider has `base.py` (Protocol), `mock.py`, `live.py`; live requires credentials
-  + `live_enabled` flag on the platform account; irreversible calls also need an approval.
-- **ADR-005 Human-operated procurement**: Shopee/Tokopedia ToS forbid bots; the OMS guides a human and enforces limits.
+## Cross-references
+ERD `08-erd.md` · security `09-tenant-security-rls.md` · state machines `10-state-machines.md` · accounting
+`11-accounting-policy.md` · reconciliation `12-…` · FP&A `14-…` · simulator `15-…` · AI `16-…` · exceptions `17-…` ·
+ops `18-…` · ADRs `07-adr.md`.
