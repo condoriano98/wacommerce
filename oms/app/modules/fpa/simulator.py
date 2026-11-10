@@ -5,9 +5,19 @@ same outputs (no randomness). Elapsed weeks can be replaced by ledger actuals (`
 reconciles to the books. Stress scenarios S1–S9 are pure transforms of the inputs. Monte Carlo is not implemented: it
 stays behind ``MONTE_CARLO_ENABLED`` until distributions are documented and validated (ADR-017).
 
-Cash timing: ad spend, dropship supplier cost, fulfilment and opex are paid in the week incurred; owned stock is bought
-up front (``inventory_buy``) and consumed as COGS; customer cash arrives after each channel's settlement delay, net of
-channel fees; returns refund the order value at settlement time.
+Cash timing: ad spend, dropship supplier cost, fulfilment and opex are paid in the week incurred; customer cash arrives
+after each channel's settlement delay, net of channel fees; returns refund the order value at settlement time.
+
+Owned inventory (remediation D2) is modelled at cost, week by week:
+
+* opening stock = ``opening_inventory`` (default: ``inventory_buy``, paid in week 0);
+* owned demand is served only up to the stock on hand — the rest is a **stockout** (lost sales: no revenue, no COGS;
+  the ad spend that produced the demand is still spent);
+* when stock + open purchase orders fall below the expected demand over ``lead_time_weeks + safety_stock_weeks``,
+  a purchase of ``reorder_cover_weeks`` of expected demand is placed; it is paid ``supplier_payment_lag_weeks``
+  after ordering and arrives after ``lead_time_weeks``;
+* carrying cost = ``carrying_cost_rate_weekly`` × average stock, charged to CM2 and paid in the week;
+* identity checked every week: opening + receipts − COGS = closing (never negative).
 """
 
 import hashlib
@@ -15,7 +25,7 @@ import json
 from dataclasses import asdict, dataclass, field, replace
 from decimal import ROUND_HALF_UP, Decimal
 
-ENGINE_VERSION = "sim-1.0"
+ENGINE_VERSION = "sim-1.1"  # 1.1: inventory-aware owned stock (remediation D2)
 MONTE_CARLO_ENABLED = False
 Z = Decimal("0")
 ONE = Decimal("1")
@@ -45,6 +55,14 @@ class PortfolioInputs:
     conversion_factor: Decimal = ONE  # S2
     sell_through_factor: Decimal = ONE  # S6 (owned-stock demand)
     outage: tuple[str, int, int] | None = None  # S8: (channel, first week, weeks)
+    # Owned inventory (D2): stock at cost, replenishment and carrying cost.
+    opening_inventory: Decimal | None = None  # stock at cost in week 0 (default: inventory_buy)
+    replenish: bool = True
+    lead_time_weeks: int = 2
+    safety_stock_weeks: Decimal = ONE
+    reorder_cover_weeks: Decimal = Decimal("4")
+    supplier_payment_lag_weeks: int = 0
+    carrying_cost_rate_weekly: Decimal = Decimal("0.002")  # storage, capital, shrinkage share of stock value
 
 
 @dataclass(frozen=True)
@@ -61,6 +79,11 @@ class PortfolioResult:
     weekly_operating_profit: list[Decimal] = field(default_factory=list)
     weekly_cm2: list[Decimal] = field(default_factory=list)
     weekly_cash_flow: list[Decimal] = field(default_factory=list)
+    inventory_closing: list[Decimal] = field(default_factory=list)
+    purchases: list[tuple[int, Decimal]] = field(default_factory=list)  # (order week, cost)
+    lost_sales: Decimal = Z  # value of owned demand not served (stockouts)
+    stockout_weeks: list[int] = field(default_factory=list)
+    carrying_cost: Decimal = Z
     revenue: Decimal = Z
     cm2: Decimal = Z
     operating_profit: Decimal = Z
@@ -91,9 +114,13 @@ def _portfolio(p: PortfolioInputs, weeks: int, actual: dict[int, dict] | None) -
     r = PortfolioResult(code=p.code)
     inflows = [Z] * (weeks + 60)
     outflows = [Z] * (weeks + 60)
+    arrivals = [Z] * (weeks + 60)
     outflows[0] += p.inventory_buy
     r.committed = p.inventory_buy
+    stock = p.inventory_buy if p.opening_inventory is None else p.opening_inventory
     for w in range(weeks):
+        opening = stock + arrivals[w]
+        receipts = arrivals[w]
         if actual and w in actual:  # ledger actuals for elapsed weeks (base case reconciliation)
             a = actual[w]
             cm2, op = Decimal(a["cm2"]), Decimal(a["operating_profit"])
@@ -104,26 +131,58 @@ def _portfolio(p: PortfolioInputs, weeks: int, actual: dict[int, dict] | None) -
             r.operating_profit += op
             inflows[w] += Decimal(a.get("cash_in", "0"))
             outflows[w] += Decimal(a.get("cash_out", "0"))
+            stock = opening
+            r.inventory_closing.append(stock)
             continue
         base_orders = p.weekly_ad_spend / p.cpa * p.conversion_factor
-        owned = base_orders * p.owned_share * p.sell_through_factor
-        orders_total = base_orders * (ONE - p.owned_share) + owned
-        revenue = cm2 = Z
-        for name, ch in sorted(p.channels.items()):
-            if p.outage and p.outage[0] == name and p.outage[1] <= w < p.outage[1] + p.outage[2]:
-                continue  # channel offline: orders lost, costs continue
-            orders = orders_total * ch.share
+        owned_demand = base_orders * p.owned_share * p.sell_through_factor
+        dropship_orders = base_orders * (ONE - p.owned_share)
+        live = {name: ch for name, ch in sorted(p.channels.items())
+                if not (p.outage and p.outage[0] == name and p.outage[1] <= w < p.outage[1] + p.outage[2])}
+        live_share = sum((ch.share for ch in live.values()), Z)
+        demand_cost = owned_demand * live_share * p.aov * p.cogs_rate  # owned stock needed this week
+        fill = ONE if demand_cost <= opening else (opening / demand_cost if demand_cost else ONE)
+        if fill < ONE:
+            r.stockout_weeks.append(w)
+            r.lost_sales += owned_demand * live_share * (ONE - fill) * p.aov
+        revenue = cm2 = owned_cogs = Z
+        for _name, ch in live.items():  # offline channels (S8): orders lost, costs continue
+            owned = owned_demand * fill * ch.share
+            orders = dropship_orders * ch.share + owned
             value = orders * p.aov
             returned = orders * p.return_rate
             refunds = returned * p.aov
             fees = value * ch.fee_rate
-            cogs = value * p.cogs_rate
-            dropship_cogs = cogs * (ONE - p.owned_share)
+            dropship_cogs = dropship_orders * ch.share * p.aov * p.cogs_rate
+            owned_cost = owned * p.aov * p.cogs_rate
             fulfil = orders * p.fulfilment_cost + returned * p.return_cost
             revenue += value - refunds
-            cm2 += value - refunds - fees - cogs - fulfil
+            cm2 += value - refunds - fees - dropship_cogs - owned_cost - fulfil
             inflows[w + _week_of(ch.settlement_delay_days)] += value - refunds - fees
             outflows[w] += dropship_cogs + fulfil
+            owned_cogs += owned_cost
+        closing = opening - owned_cogs
+        if closing < 0:  # cannot happen: demand is capped by stock
+            raise AssertionError(f"negative inventory in week {w}")
+        if (stock + receipts - owned_cogs) != closing:
+            raise AssertionError(f"inventory identity broken in week {w}")
+        carrying = p.carrying_cost_rate_weekly * (opening + closing) / 2
+        cm2 -= carrying
+        outflows[w] += carrying
+        r.carrying_cost += carrying
+        # Replenishment on expected (unconstrained) demand; open purchase orders count towards cover.
+        expected = owned_demand * live_share * p.aov * p.cogs_rate if live_share else \
+            owned_demand * p.aov * p.cogs_rate
+        on_order = sum(arrivals[w + 1:], Z)
+        if p.replenish and expected > 0 and \
+                closing + on_order < expected * (Decimal(p.lead_time_weeks) + p.safety_stock_weeks):
+            po = expected * p.reorder_cover_weeks
+            arrivals[w + p.lead_time_weeks] += po
+            outflows[w + p.supplier_payment_lag_weeks] += po
+            r.purchases.append((w, po))
+            r.committed += po
+        stock = closing
+        r.inventory_closing.append(stock)
         cm2 -= p.weekly_ad_spend
         outflows[w] += p.weekly_ad_spend + p.fixed_opex_weekly
         r.committed += p.weekly_ad_spend
@@ -166,6 +225,10 @@ def run(inputs: SimInputs, actual_weeks: dict[str, dict[int, dict]] | None = Non
             "contribution_per_rp_committed": str(r.contribution_per_rp_committed),
             "recovery_week": r.recovery_week,
             "weekly_operating_profit": [_q(v) for v in r.weekly_operating_profit],
+            "inventory_closing": [_q(v) for v in r.inventory_closing],
+            "inventory_purchases": [{"week": wk, "cost": _q(v)} for wk, v in r.purchases],
+            "lost_sales": _q(r.lost_sales), "stockout_weeks": r.stockout_weeks,
+            "carrying_cost": _q(r.carrying_cost),
         } for r in results},
     }
 

@@ -104,7 +104,7 @@ def execute_reallocation(session: Session, principal: Principal, approval_id: uu
 
 
 def commit(session: Session, org_id, *, portfolio_id, category: str, purpose: str, source_type: str, source_id: str,
-           amount: Decimal) -> CapitalCommitment:
+           amount: Decimal, expected_payment_date: date | None = None) -> CapitalCommitment:
     """Reserve mandate for a purpose. Approved when no mandate is configured (tracking only) or it fits; otherwise
     'proposed' and an exception case is opened for the portfolio manager."""
     existing = session.scalars(select(CapitalCommitment).where(
@@ -113,8 +113,14 @@ def commit(session: Session, org_id, *, portfolio_id, category: str, purpose: st
     if existing:
         return existing
     fits = not has_mandate(session, portfolio_id, category) or available(session, portfolio_id, category) >= amount
+    from app.models.org import Brand, Portfolio
+
+    portfolio = session.get(Portfolio, portfolio_id)
+    brand = session.get(Brand, portfolio.brand_id) if portfolio is not None else None
     c = CapitalCommitment(organization_id=org_id, portfolio_id=portfolio_id, category=category, purpose=purpose,
                           source_type=source_type, source_id=source_id, amount=amount,
+                          legal_entity_id=brand.legal_entity_id if brand else None,
+                          expected_payment_date=expected_payment_date,
                           status="approved" if fits else "proposed")
     session.add(c)
     session.flush()

@@ -362,3 +362,100 @@ def test_B5_unmatched_payout_ages_into_a_bank_unmatched_case(tenant):
         case = s.execute(text("select type, exposure from exception_cases where organization_id = :o "
                               "and type = 'bank_unmatched'"), {"o": tenant.org_id}).one()
     assert D(case.exposure) == amount
+
+
+# --- D1 legal-entity-scoped commitments in the cash forecast ----------------------------------------------------
+
+
+def test_D1_cash_forecast_counts_only_the_entitys_commitments_in_their_payment_week(tenant):
+    from app.models.org import Brand, LegalEntity, Portfolio
+    from app.modules import capital
+    from app.modules.fpa import cash
+
+    with owner_session() as s:
+        le2 = LegalEntity(organization_id=tenant.org_id, name="PT Second")
+        s.add(le2)
+        s.flush()
+        brand2 = Brand(organization_id=tenant.org_id, name="Second brand", legal_entity_id=le2.id)
+        s.add(brand2)
+        s.flush()
+        pd = Portfolio(organization_id=tenant.org_id, brand_id=brand2.id, code="D", name="Portfolio D",
+                       approved_channels=[], approved_procurement_sources=[])
+        s.add(pd)
+        s.flush()
+        le2_id, pd_id = le2.id, pd.id
+    fin = principal(tenant, "finance")
+    with tenant_session(tenant.org_id, fin.user_id) as s:
+        capital.commit(s, tenant.org_id, portfolio_id=pd_id, category="inventory", purpose="PO for D",
+                       source_type="inventory_po", source_id="PO-D-1", amount=D("7000000"),
+                       expected_payment_date=utcnow().date() + timedelta(days=21))
+        capital.commit(s, tenant.org_id, portfolio_id=tenant.portfolios["A"], category="advertising",
+                       purpose="ads A", source_type="ad_budget", source_id="ADS-A-1", amount=D("500000"))
+    with tenant_session(tenant.org_id, fin.user_id) as s:
+        f1 = cash.forecast_13w(s, tenant.legal_entity_id)
+        f2 = cash.forecast_13w(s, le2_id)
+    out1 = {w["week"]: D(w["outflow"]) for w in f1["weeks"]}
+    out2 = {w["week"]: D(w["outflow"]) for w in f2["weeks"]}
+    assert sum(out1.values()) == D("500000") and out1[1] == D("500000")  # entity 1: its own ad commitment only
+    assert sum(out2.values()) == D("7000000") and out2[3] == D("7000000")  # entity 2: PO, in its payment week
+    with owner_session() as s:
+        les = dict(s.execute(text("select source_id, legal_entity_id from capital_commitments "
+                                  "where organization_id = :o"), {"o": tenant.org_id}).all())
+    assert les == {"PO-D-1": le2_id, "ADS-A-1": tenant.legal_entity_id}
+
+
+# --- D2 inventory-aware simulator -------------------------------------------------------------------------------
+
+
+def _one_week_stock():
+    from app.modules.fpa.simulator import Channel, PortfolioInputs, SimInputs
+
+    ch = {"prepaid": Channel(D("1"), 2, D("0"))}
+    # 10 owned orders/week of Rp100,000 at 50% cost = Rp500,000 of stock per week; opening stock covers ONE week.
+    p = PortfolioInputs("X", D("200000"), D("20000"), D("100000"), D("0.5"), D("0"), D("0"), D("0"), D("0"), ch,
+                        owned_share=D("1"), opening_inventory=D("500000"), lead_time_weeks=2,
+                        safety_stock_weeks=D("1"), reorder_cover_weeks=D("4"), carrying_cost_rate_weekly=D("0"))
+    return SimInputs(opening_cash=D("5000000"), reserve=D("0"), weeks=6, portfolios=(p,))
+
+
+def test_D2_one_week_sell_through_stocks_out_until_replenishment_arrives():
+    from app.modules.fpa import simulator
+
+    x = simulator.run(_one_week_stock())["portfolios"]["X"]
+    # Week 0 sells the opening stock and orders 4 weeks of cover (arrives week 2); week 1 is a stockout.
+    assert x["stockout_weeks"] == [1]
+    assert x["lost_sales"] == "1000000"
+    assert x["inventory_purchases"] == [{"week": 0, "cost": "2000000"}, {"week": 3, "cost": "2000000"}]
+    assert x["inventory_closing"] == ["0", "0", "1500000", "1000000", "500000", "2000000"]
+    assert x["revenue"] == "5000000"  # 5 weeks served x Rp1,000,000; nothing sold from empty shelves
+    # Stock identity over the horizon: opening + purchases received - COGS = closing.
+    assert D("500000") + D("4000000") - 5 * D("500000") == D(x["inventory_closing"][-1])
+
+
+def test_D2_inventory_purchases_are_cash_outflows_and_lost_sales_bring_no_cash():
+    from app.modules.fpa import simulator
+
+    out = simulator.run(_one_week_stock())
+    path = [D(c) for c in out["consolidated"]["cash_path"]]
+    ads = D("200000")  # the ad spend that creates demand is paid every week, stock or not
+    assert path[0] == D("5000000") - D("2000000") - ads  # first purchase order paid at order
+    assert path[1] == path[0] + D("1000000") - ads  # week-0 sales settle one week later
+    assert path[2] == path[1] - ads  # week-1 stockout: nothing sold, nothing to settle
+    assert path[3] == path[2] + D("1000000") - D("2000000") - ads  # week-2 sales in, second purchase order out
+
+
+def test_D2_long_downside_keeps_inventory_cash_and_contribution_consistent():
+    from app.modules.fpa import simulator
+
+    seed = simulator.rp100m_seed()
+    base = simulator.run(seed)["portfolios"]["A"]
+    s6 = simulator.run(simulator.SCENARIOS["S6_sell_through_-40"](seed))["portfolios"]["A"]
+    for r in (base, s6):
+        assert len(r["inventory_closing"]) == 26 and all(D(v) >= 0 for v in r["inventory_closing"])
+        assert r["inventory_purchases"]  # owned stock is replenished, not assumed infinite
+        assert D(r["carrying_cost"]) > 0
+    assert D(s6["lost_sales"]) <= D(base["lost_sales"])
+    # Lower sell-through buys less stock over the horizon and earns less contribution.
+    assert sum(D(p["cost"]) for p in s6["inventory_purchases"]) < sum(D(p["cost"]) for p in base["inventory_purchases"])
+    assert D(s6["cm2"]) < D(base["cm2"])
+    assert simulator.run(seed) == simulator.run(seed)  # still deterministic

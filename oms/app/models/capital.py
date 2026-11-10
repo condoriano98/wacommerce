@@ -43,6 +43,8 @@ class CapitalCommitment(OrgMixin, Base):
     status: Mapped[str] = mapped_column(default="proposed")
     approval_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("human_approvals.id"))
     expires_at: Mapped[datetime | None]
+    legal_entity_id: Mapped[uuid.UUID | None]  # entity that will pay (portfolio → brand → legal entity)
+    expected_payment_date: Mapped[date | None]  # when the cash is expected to leave (cash forecast week)
 
 
 class CommitmentConsumption(OrgMixin, Base):

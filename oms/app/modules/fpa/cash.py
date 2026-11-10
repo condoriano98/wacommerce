@@ -7,6 +7,7 @@ the allowance (1109) is shown, never netted silently.
 """
 
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -40,10 +41,17 @@ def forecast_13w(session: Session, legal_entity_id=None) -> dict:
     for acct, wk in PAYABLE_DUE_WEEKS.items():
         if b.get(acct, Z) < 0:
             weeks[wk]["outflow"] += -b[acct]
-    committed = Decimal(session.scalar(select(func.coalesce(func.sum(
-        CapitalCommitment.amount - CapitalCommitment.consumed_amount), 0)).where(
-        CapitalCommitment.status.in_(("approved", "partially_consumed")))) or 0)
-    weeks[1]["outflow"] += committed
+    # Open commitments of THIS entity only, in the week their payment is expected (default: next week). Consumed
+    # amounts are excluded: they are already payables or cash out in the ledger (no double count).
+    cq = select(CapitalCommitment.amount - CapitalCommitment.consumed_amount,
+                CapitalCommitment.expected_payment_date).where(
+        CapitalCommitment.status.in_(("approved", "partially_consumed")))
+    if legal_entity_id is not None:
+        cq = cq.where(CapitalCommitment.legal_entity_id == legal_entity_id)
+    today = date.today()
+    for open_amount, pay_date in session.execute(cq).all():
+        week = 1 if pay_date is None else min(max((pay_date - today).days // 7, 0), 12)
+        weeks[week]["outflow"] += Decimal(open_amount)
     cash = b.get(A.CASH, Z)
     for w in weeks:
         cash += w["inflow"] - w["outflow"]
