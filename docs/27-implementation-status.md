@@ -84,8 +84,10 @@ belongs to a later release, after both role modes have run in staging (ADR-014).
 - `OMS_DB_ROLE_MODE=legacy` path kept for cutover. CI runs `v31` only.
 
 ## Milestone log
+**M1 closed 2026-11-10**: local and CI green on `3057cd1`. External verification: none (all providers mocked or absent).
+
 | Milestone | Commit | CI | Local tests (pass/fail/skip) | Functional | External verification |
 |---|---|---|---|---|---|
-| M0 | `103608a` | see PR #2 checks | 56/0/0 (`cd oms && uv run pytest -q`) | spec consolidated, fixtures, inventory, impact assessment | provider gates open |
-| M1 core | `73947dd` | see PR #2 checks | 80/0/0 | services, migrations 0004–0007, acceptance #1–4, 7–9, 11a, 13a, 16, 17, 19, 20 | none (all providers mocked/absent) |
-| M1 worker | _this commit_ | _pending_ | 84/0/0 (`cd oms && uv run pytest`, PostgreSQL 16.x local) | Procrastinate executor (0008, `app/worker.py`) | G-PROC verified locally |
+| M0 | `103608a` | ✅ PR run 3 | 56/0/0 (`cd oms && uv run pytest -q`) | spec consolidated, fixtures, inventory, impact assessment | provider gates open |
+| M1 core | `73947dd` | ✅ push run 6, PR run 7 (`c0f085a` WIP failed, superseded) | 80/0/0 | services, migrations 0004–0007, acceptance #1–4, 7–9, 11a, 13a, 16, 17, 19, 20 | none (all providers mocked/absent) |
+| M1 worker | `3057cd1` | ✅ push run 8 (42749665055), PR run 9 (42749670705) | 84/0/0 (`cd oms && uv run pytest`, PostgreSQL 16.x local) | Procrastinate executor (0008, `app/worker.py`) | G-PROC verified locally |
