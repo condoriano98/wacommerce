@@ -26,5 +26,7 @@ services:
       OMS_WORKER_DATABASE_URL: postgresql+psycopg://oms_worker:oms_worker@db:5432/postgres
     depends_on: {migrate: {condition: service_completed_successfully}}
   dashboard:
-    build: {context: ../dashboard, args: {NEXT_PUBLIC_OMS_API_URL: "http://localhost:8000"}}
+    build: {context: ../dashboard}
+    # Server-side only: the browser talks to the dashboard origin; its /api/oms proxy calls the API (remediation E1).
+    environment: {OMS_API_URL: "http://api:8000", OMS_COOKIE_INSECURE: "1"}  # local http only; never in production
     ports: ["3000:3000"]

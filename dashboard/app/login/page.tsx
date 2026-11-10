@@ -1,18 +1,25 @@
 "use client";
+import { useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { Page } from "@/components/Page";
-import { omsFetch, setToken } from "@/lib/api";
+import { signIn } from "@/lib/api";
 
 export default function Login() {
+  const params = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [msg, setMsg] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(
+    params.get("expired") ? "Your session has expired. Please sign in again." : null);
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     try {
-      const r = await omsFetch("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
-      setToken(r.access_token); setMsg("Signed in");
-    } catch (err: any) { setToken(null); setMsg(err.message ?? "Sign-in failed"); }
+      await signIn(email, password);
+      const next = params.get("next");
+      // Full navigation: the client router may hold prefetched pre-sign-in redirects for protected pages.
+      window.location.assign(next && next.startsWith("/") && !next.startsWith("//") ? next : "/");
+    } catch (err: any) {
+      setMsg(err.message ?? "Sign-in failed");
+    }
   }
   return (
     <Page title="Sign in">

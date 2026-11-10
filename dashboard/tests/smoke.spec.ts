@@ -1,7 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 
 // The OMS API is mocked at the network layer: the dashboard is a pure client of it (no direct DB/provider access).
-const API = "http://localhost:8000";
+// The browser only talks to its own origin (/api/oms proxy, remediation E1); pages require a session cookie.
+const API = "/api/oms";
+const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
+const fakeSession = `${b64({ alg: "HS256" })}.${b64({ exp: Math.floor(Date.now() / 1000) + 3600 })}.sig`;
 const fixtures: Record<string, unknown> = {
   "/fpa/waterfall": { period: ["2026-11-01", "2026-11-30"], gross_sales: "205000.00", returns_allowances: "0",
     net_sales: "205000.00", cm1_costs: "-134000.00", cm1: "71000.00", marketing: "-100000.00", cm2: "-29000.00",
@@ -20,8 +23,9 @@ const fixtures: Record<string, unknown> = {
 };
 
 async function mockApi(page: Page, status = 200) {
-  await page.route(`${API}/**`, async (route) => {
-    const path = new URL(route.request().url()).pathname;
+  await page.context().addCookies([{ name: "oms_session", value: fakeSession, url: "http://localhost:3100" }]);
+  await page.route(`**${API}/**`, async (route) => {
+    const path = new URL(route.request().url()).pathname.replace(API, "");
     if (status !== 200) return route.fulfill({ status, json: { detail: "invalid token" } });
     return route.fulfill({ status: 200, json: fixtures[path] ?? [] });
   });
@@ -62,7 +66,21 @@ test("simulator runs stress scenarios and shows alerts", async ({ page }) => {
 });
 
 test("API authorization errors are shown, not hidden", async ({ page }) => {
-  await mockApi(page, 401);
+  await mockApi(page, 403);
   await page.goto("/fpa");
   await expect(page.getByRole("alert").filter({ hasText: "invalid token" })).toBeVisible();
+});
+
+test("an expired or rejected session sends the user back to sign-in", async ({ page }) => {
+  await mockApi(page, 401);
+  await page.goto("/fpa");
+  await expect(page).toHaveURL(/\/login\?expired=1/);
+  await expect(page.getByRole("status")).toContainText("session has expired");
+});
+
+test("pages require a session; the browser never holds the OMS token", async ({ page }) => {
+  await page.goto("/orders");
+  await expect(page).toHaveURL(/\/login\?next=%2Forders/);
+  expect(await page.evaluate(() => Object.keys(window.localStorage))).toEqual([]);
+  expect(await page.evaluate(() => document.cookie)).not.toContain("oms_session");
 });

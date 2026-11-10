@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Suspense, type ReactNode } from "react";
 import "./globals.css";
+import { SignOut } from "@/components/SignOut";
 import { Providers } from "./providers";
 
 export const metadata: Metadata = { title: "Wacommerce OMS", description: "Operations, finance and capital" };
@@ -9,7 +10,7 @@ export const metadata: Metadata = { title: "Wacommerce OMS", description: "Opera
 const nav = [
   ["/", "Overview"], ["/portfolios", "Portfolios"], ["/orders", "Orders"], ["/procurement", "Procurement"],
   ["/approvals", "Approvals"], ["/exceptions", "Exceptions"], ["/fpa", "FP&A waterfall"], ["/capital", "Capital"],
-  ["/simulator", "Simulator"], ["/integrations", "Integrations"], ["/login", "Sign in"],
+  ["/simulator", "Simulator"], ["/integrations", "Integrations"],
 ];
 
 export default function RootLayout({ children }: { children: ReactNode }) {
@@ -26,6 +27,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
                   <li key={href}><Link className="block rounded px-2 py-1 hover:bg-slate-100" href={href}>{label}</Link></li>
                 ))}
               </ul>
+              <SignOut />
               <p className="mt-6 text-xs text-slate-400">All providers mocked. No live actions.</p>
             </nav>
             <main className="flex-1 p-6">{children}</main>
