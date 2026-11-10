@@ -59,6 +59,11 @@ PLAYBOOKS: dict[str, Playbook] = {
     # ADR-015: an external side effect whose outcome is unknown and cannot be looked up (e.g. Biteship booking after a
     # timeout). A human checks the provider dashboard; the OMS never re-sends automatically.
     "external_uncertain": Playbook("high", "finance_manager", 4, ("confirm_effect", "confirm_absent_and_retry"), {}, None),
+    # M3 risk alerts (advisory; acceptance #18)
+    "liquidity_breach": Playbook("critical", "finance_manager", 24, ("reduce_ad_budget", "delay_inventory_buy",
+                                                                    "inject_capital", "accept_risk"),
+                                 {"inject_capital": "capital_reallocation"}, None),
+    "margin_breach": Playbook("high", "finance_manager", 72, ("reprice", "cut_channel", "accept_risk"), {}, None),
     "manual_review": Playbook("medium", "portfolio_manager", 8, ("route_manually", "cancel_and_refund"),
                               {"cancel_and_refund": "refund"}, None),
 }

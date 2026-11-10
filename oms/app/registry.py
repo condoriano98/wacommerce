@@ -10,3 +10,4 @@ from app.modules import (  # noqa: F401
     provider_webhooks,
     settlements,
 )
+from app.modules.fpa import risk  # noqa: F401,E402
