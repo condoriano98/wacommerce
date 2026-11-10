@@ -18,20 +18,20 @@ M5 is the **target state**, not permission to deploy. M0–M4 acceptance conditi
 - `docs/18-deployment-recovery.md` defines recovery targets and controls but does not supply drill evidence.
 - The CI workflow added on this readiness branch executes lint and existing Postgres-backed tests; **workflow results have not been verified**. Passing legacy tests does **not** certify V3.1.
 
-## Sequential gates
+## Sequential gates (updated 2026-11-10 with evidence; see docs/27 for SHAs and CI runs)
 
 | Gate | Exit evidence | State |
 |---|---|---|
-| M0 architecture/provider verification | DOKU/Biteship/Chatwoot/procrastinate contracts or explicit owned waivers; accountant/tax decisions documented; journal fixtures automated | Open |
-| M1 financially correct core | V3.1 migrations and code, no runtime BYPASSRLS, quantity-aware split fulfillment, accurate COD/prepay journals, reconciliation and capital invariants, negative tests | Blocked |
-| M2 commerce vertical slice | Mocked, replay-safe Meta–OMS–Chatwoot and n8n flow; authorized OMS commands; payment/shipment simulation; loop/duplicate tests | Blocked |
-| M3 FP&A | CM1–3 tie to ledger, closed-period immutability, cash forecasts, Rp100M scenario, stress and liquidity alerts | Blocked |
-| M4 platform expansion | Capability-state contracts, CSV fallback, integration tests against sandbox/recorded responses, no false live-ready labels | Blocked |
-| M5 security | RLS fuzzing, role and object-level auth, secret/log scans, dependency scan, threat model and remediation | Not started |
-| M5 reliability | Worker-kill/restart, transactional outbox retries, duplicate and out-of-order webhooks, poison messages, circuit breakers, reconciliation ageouts | Not started |
-| M5 observability | Correlation IDs and dashboards for API, workers, outbox lag, backlog, provider errors, reconcile exceptions; alerts exercised | Not started |
-| M5 recovery | Backup inventory, verified restore to isolated environment, measured RPO <=15 min and RTO <=4 h or documented unmet target | Not started |
-| M5 release control | Signed-off runbook, staged deployment, manual irreversible-action approvals, rollback and incident contacts | Not started |
+| M0 architecture/provider verification | Fixtures automated; provider facts documentation-verified (not sandbox) | **Met (docs)** — G-DOKU/G-BS/G-CW1 sandbox verification open |
+| M1 financially correct core | Migrations 0004–0008, no runtime BYPASSRLS, F1–F13 via services, acceptance #1–4, 7–9, 11a, 13a, 16, 17, 19, 20 | **Met** (CI green) |
+| M2 commerce vertical slice | Mocked Meta–OMS–Chatwoot, agent API, #5, #6, #14, #15, E2E | **Met** (mocked) |
+| M3 FP&A | Waterfall tie-out, #12, #13b, S1–S9, #18, dashboard | **Met** |
+| M4 platform expansion | Capability states, CSV fallback, #10, #11b, review P0/P1 fixed | **Met (mock_tested)** — no sandbox/recorded responses (access blocked) |
+| M5 security | RLS fuzzing, FK catalogue, route matrix, secret hygiene, key rotation, threat model, CI scans | **Met in code** — gitleaks result pending first CI run; residual risks in docs/30 |
+| M5 reliability | Worker kill (#6), outbox retries/dead letters, duplicate/out-of-order webhooks, replay window, circuit breaker, invariant checks | **Met** (tests) |
+| M5 observability | Correlation IDs, JSON logs, /metrics, alert rules, injected failures visible | **Met in code** — no Prometheus/Grafana deployed; alerts not exercised end-to-end |
+| M5 recovery | Local isolated restore drill with timestamps (docs/28) | **Preliminary only** — Sumopod PITR + production-sized RTO open (G-OPS1); RPO 15 min not met by logical backups |
+| M5 release control | Runbooks (docs/26), release checklist, manual approval before first live transaction | **Documented** — not signed off; no deployment performed |
 
 ## External and governance gates
 
@@ -61,7 +61,7 @@ M5 is the **target state**, not permission to deploy. M0–M4 acceptance conditi
 
 ## Release decision record
 
-- Decision: **NO-GO for production**.
-- Justification: V3.1 documentation has not yet been implemented or validated; provider and recovery gates remain open.
+- Decision: **NO-GO for production** (re-confirmed 2026-11-10 after M0–M5 implementation).
+- Justification: implementation and tests are complete for M0–M5 with all providers mocked, but external gates remain open: provider sandbox verification (G-DOKU, G-BS1–3, G-CW1, marketplace/ads access), accountant/tax sign-off (G-ACC1/G-TAX1), second approver (G-GOV1), Sumopod PITR and role privileges (G-OPS1/G-OPS2), ad-spend FX/entity policy (G-ADS1), Metabase instance (G-MB1 instance part). Residual security risks in docs/30.
 - Next engineering work: M0 gate closure followed by M1 schema/application corrections, while building CI and safety checks in parallel.
 - Do not sign off M5 until every required evidence link is attached and independently reviewed.

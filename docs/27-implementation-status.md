@@ -173,6 +173,33 @@ Shopee shop eligibility (Seller In-house app), TikTok Shop ISV/partner access fo
 (Sponsored Solutions category unverified), Google Ads/Data Manager access, TikTok Ads app review, Meta `ads_read` system
 user. CSV imports are the supported path until access exists.
 
+## M5 — Production hardening (no deployment)
+
+### Evidence (PR #1 hardening tests)
+| # | Test / artefact |
+|---|---|
+| 1 | `test_m5_security.py::test_1_rls_fuzz_*` (Hypothesis: 8 roles × all portfolio-scoped tables × org-GUC spoof, reads + writes) |
+| 2 | `test_m5_security.py::test_2_*` (FK catalogue — found and fixed `import_batches.platform_account_id`, migration 0017; DB rejects cross-org references) |
+| 3 | `test_m5_ops.py::test_invariants_*`, `modules/invariants.py` (hourly worker task, API) |
+| 4 | `test_m2_reliability.py` (worker SIGKILL), `test_m4_review_fixes.py` (token rotation crash) |
+| 5 | `test_m2_whatsapp.py`, `test_m2_e2e.py`, `test_m5_ops.py::test_webhook_replay_window_*` |
+| 6 | `test_m1_acceptance.py::test_11a_*`, `test_m4_channels.py::test_11b_*` |
+| 7 | `test_m5_security.py::test_7_*` (responses, audit logs, logs, ciphertext; key rotation) + gitleaks in CI |
+| 8 | `docs/28-dr-drill-evidence.md` — **preliminary** local drill (RTO 3.3 s on 1.7 MB; RPO target not met by logical backups) |
+| 9 | `test_m5_ops.py::test_metrics_endpoint_protection_and_injected_failures` (dead letter + provider errors visible), `deploy/observability/alerts.yml` |
+| 10 | docs/26 release checklist item 7 (process control; not testable in code) |
+
+### Fixed during M5 (found by the new tests)
+- `/webhooks/biteship` accepted unauthenticated callbacks → shared URL token (provider signature still unverified, G-BS2).
+- `/agent/tools`, `/fpa/simulations/scenarios` were readable without sign-in → authenticated.
+- `import_batches.platform_account_id` lacked a tenant-scoped FK → migration 0017.
+
+### Not done / open
+- Docker images not built here (no Docker daemon); compose/Dockerfiles checked statically only.
+- gitleaks not run locally (downloading the binary was not permitted in this session); first result comes from CI.
+- No Prometheus/Grafana/Sumopod deployment; alert rules not exercised end to end.
+- Residual risks (docs/30): trusted identity GUCs for server roles; ORG-scoped tables check org only.
+
 ## Milestone log
 **M3 closed 2026-11-10**: local and CI green (both workflows) on `24a559f`/`26e3d68`; no external systems involved.
 **M2 closed 2026-11-10**: local and CI green on `65224c0`; all providers mocked, n8n not externally verified.
@@ -186,3 +213,4 @@ user. CSV imports are the supported path until access exists.
 | M2 | `9d2473e` (slices `09c9d33`, `f634227`, `9692cc6`) | ✅ push run 17 (42753626706), PR run 18 (42753632856); slices ✅ runs 11, 13, 15 | 117/0/0 (`cd oms && uv run pytest`) | WhatsApp vertical slice, #5, #6, #14, #15, E2E | none — all providers mocked; n8n not verified |
 | M3 | `24a559f` (slices `d0658a7`→fix `d367e84`, `76ff6c5`→fix `55a9a29`, `ef4792e`) | ✅ OMS push 30 / PR 31, Dashboard push 1 / PR 2 (`24a559f`); PR runs OMS 32 + Dashboard 3 (`26e3d68`) | 130/0/0 OMS (`cd oms && uv run pytest`); dashboard build + 5/0/0 Playwright | waterfall + tie-out, #12, #13b, S1–S9 + #18, cash forecast, bulk-buy, FP&A API, dashboard | none — no external systems involved; Metabase instance unverified |
 | M4 | `9d45743` + review fixes (this commit) | ✅ `9d45743` push 34 / PR 35, `b1a2735` PR 36; review fixes _pending_ | 151/0/0 | adapters (mock), channel sync, CSV imports, #10, #11b, review P0/P1 fixed | none — all marketplace/ads access blocked; G-ADS1 open |
+| M5 | `1fd96d6`, `a10cb8e`, this commit | _pending_ | 171/0/0 (`cd oms && uv run pytest`) | hardening tests 1–9 automated or evidenced; deploy configs; release checklist | DR drill preliminary; gitleaks pending CI; no deployment; release **NO-GO** |

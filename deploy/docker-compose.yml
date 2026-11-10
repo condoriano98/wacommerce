@@ -1,0 +1,30 @@
+# Local/CI stack — all providers mocked, live flags off. NOT a production deployment.
+services:
+  db:
+    image: postgres:16
+    environment: {POSTGRES_PASSWORD: postgres}
+    ports: ["5432:5432"]
+    healthcheck: {test: ["CMD-SHELL", "pg_isready -U postgres"], interval: 5s, retries: 10}
+  migrate:
+    build: {context: ../oms, target: migrate}
+    environment:
+      OMS_MIGRATION_DATABASE_URL: postgresql+psycopg://postgres:postgres@db:5432/postgres
+    depends_on: {db: {condition: service_healthy}}
+  api:
+    build: {context: ../oms, target: api}
+    env_file: [./sumopod/oms.env.example]
+    environment:
+      OMS_ENV: dev
+      OMS_DATABASE_URL: postgresql+psycopg://oms_app:oms_app@db:5432/postgres
+    ports: ["8000:8000"]
+    depends_on: {migrate: {condition: service_completed_successfully}}
+  worker:
+    build: {context: ../oms, target: worker}
+    env_file: [./sumopod/oms.env.example]
+    environment:
+      OMS_ENV: dev
+      OMS_WORKER_DATABASE_URL: postgresql+psycopg://oms_worker:oms_worker@db:5432/postgres
+    depends_on: {migrate: {condition: service_completed_successfully}}
+  dashboard:
+    build: {context: ../dashboard, args: {NEXT_PUBLIC_OMS_API_URL: "http://localhost:8000"}}
+    ports: ["3000:3000"]

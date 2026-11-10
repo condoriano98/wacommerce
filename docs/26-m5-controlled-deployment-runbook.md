@@ -62,3 +62,17 @@ will **not** retry with the old token.
 4. Remove the `reauthorization_required` blocker by resolving the case (`/external-operations/{id}/resolve`,
    `effect_exists=true`), then run one manual order sync and confirm the registry state.
 5. Record the incident (time window without sync) and run an order backfill for the gap.
+
+
+## Release checklist (each item needs a named approver and a timestamp; none is signed yet)
+1. All CI workflows green on the release commit (OMS, Dashboard, Security).
+2. External gates closed or explicitly waived in writing by the owner (docs/25 table).
+3. Staging rehearsal: restore a production-like backup, run `alembic upgrade head` as the migration job (ADR-014),
+   `/readyz` green, `/ops/invariants/check` clean, smoke the dashboard.
+4. Secrets loaded from the Sumopod secret store; the process refuses dev defaults (`production_problems`).
+5. `/metrics` scraped and alert rules loaded; inject one failure per integration in staging and see the alert.
+6. Backups/PITR confirmed with a measured restore (G-OPS1); evidence appended to docs/28.
+7. **First live transaction / provider-side irreversible effect** (payment link, paid booking, purchase, refund, ad
+   change): explicit human approval recorded before it happens; `live_enabled` switched per account by the owner only.
+8. Rollback plan rehearsed: code revert before schema; contract migrations (e.g. `deploy/migrations/contract_drop_oms_system.sql`)
+   never in the same release as their expand step.
