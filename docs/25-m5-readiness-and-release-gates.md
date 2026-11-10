@@ -1,6 +1,6 @@
 # 25 — M5 Production Hardening: Readiness Audit and Release Gates
 
-Status: **BLOCKED — NOT PRODUCTION READY**  
+Status: **BLOCKED — NOT PRODUCTION READY** (re-confirmed after the remediation of 2026-11-10, docs/31)  
 Audit date: 2026-11-10  
 Baseline: `claude/intelligent-cori-6qujr0` (V3.1 planning revision).
 
@@ -32,6 +32,7 @@ M5 is the **target state**, not permission to deploy. M0–M4 acceptance conditi
 | M5 observability | Correlation IDs, JSON logs, /metrics, alert rules, injected failures visible | **Met in code** — no Prometheus/Grafana deployed; alerts not exercised end-to-end |
 | M5 recovery | Local isolated restore drill with timestamps (docs/28) | **Preliminary only** — Sumopod PITR + production-sized RTO open (G-OPS1); RPO 15 min not met by logical backups |
 | M5 release control | Runbooks (docs/26), release checklist, manual approval before first live transaction | **Documented** — not signed off; no deployment performed |
+| Post-M5 review remediation | Findings A1–G reproduced and fixed with regression tests (docs/31); invariants for subledger = GL, receivables, COD, payouts, attribution | **Met in code** (211/0/0 local; CI per docs/31) — accountant confirmation of 1050 / payment application order pending (G-ACC1) |
 
 ## External and governance gates
 
@@ -45,6 +46,8 @@ M5 is the **target state**, not permission to deploy. M0–M4 acceptance conditi
 | G-OPS1 / G-OPS2 | Sumopod PITR and role privileges | Backup restore proof and DB permission test |
 | G-GOV1 | Founder-only approval conflict | Separation-of-duties solution approved |
 | G-MB1 | Metabase tenant-safe reporting | Test of permitted reporting isolation |
+| **G-SEC1** | Runtime database identity | The database now rejects a (user, org) pair without membership (0023), but anyone holding the `oms_app` credentials can still assert a valid pair. Required: per-tenant DB roles or an identity service, plus a penetration test, before multi-tenant production |
+| G-BS2 (detail) | Biteship webhook authentication | The shared query-string token is a **provisional** control; provider-native verification evidence required |
 
 ## Production hardening acceptance tests
 
@@ -65,3 +68,10 @@ M5 is the **target state**, not permission to deploy. M0–M4 acceptance conditi
 - Justification: implementation and tests are complete for M0–M5 with all providers mocked, but external gates remain open: provider sandbox verification (G-DOKU, G-BS1–3, G-CW1, marketplace/ads access), accountant/tax sign-off (G-ACC1/G-TAX1), second approver (G-GOV1), Sumopod PITR and role privileges (G-OPS1/G-OPS2), ad-spend FX/entity policy (G-ADS1), Metabase instance (G-MB1 instance part). Residual security risks in docs/30.
 - Next engineering work: M0 gate closure followed by M1 schema/application corrections, while building CI and safety checks in parallel.
 - Do not sign off M5 until every required evidence link is attached and independently reviewed.
+
+## Release decisions after the remediation (2026-11-10)
+
+- **PR #2 → development branch:** ready for human review once its CI (including `live-e2e`) is green; a reviewer
+  approves and merges. No merge was performed by the implementer.
+- **Production:** **NO-GO.** Open gates: G-SEC1, G-OPS1/2, G-DOKU, G-BS1–4, G-CW1, G-ACC1/G-TAX1, G-GOV1, G-ADS1,
+  marketplace/ads access, G-MB1.

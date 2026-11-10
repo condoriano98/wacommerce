@@ -34,3 +34,21 @@ verification (row counts of 11 critical tables, balanced journals, migration hea
 2. Restore a production-sized copy into an isolated environment; measure RTO end-to-end; verify with
    `/ops/invariants/check` and the readiness probe; record timestamps here.
 3. Independent review of this document.
+
+## Re-run after the remediation (2026-11-10, schema head 0024)
+
+```json
+{"drill": "local-logical-backup", "source_db": "oms_test", "backup_start": "2026-11-10T09:11:13.645Z",
+ "backup_end": "2026-11-10T09:11:13.993Z", "failure_simulated_at": "2026-11-10T09:11:14.413Z",
+ "restore_start": "2026-11-10T09:11:14.415Z", "verified_at": "2026-11-10T09:11:17.670Z",
+ "rto_seconds": 3.255, "rpo_seconds_measured": 0.768, "post_backup_write_lost": true, "row_counts_match": true,
+ "unbalanced_journals": 0, "schema_head": "0024", "tables_with_forced_rls": 100, "mismatches": "",
+ "post_restore": {"outbox_pending": 1, "outbox_dead": 0, "external_operations_sent_unconfirmed": 1,
+                  "external_operations_uncertain": 5, "payouts_awaiting_bank_proof": 9, "legacy_duplicate_postings": 0},
+ "dump_bytes": 2110976}
+```
+
+Same interpretation as above: a 2.1 MB local logical backup restored in 3.3 s proves the procedure and the
+post-restore checks work; it says nothing about Sumopod PITR or a production-sized RTO. The `post_restore` counts are
+test data (deliberately uncertain operations from the reliability tests) and show what an operator must reconcile
+before workers resume. **G-OPS1 remains open.**

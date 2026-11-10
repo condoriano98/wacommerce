@@ -29,3 +29,5 @@
 | C20 | Partial order visibility | Order header visible if any line visible | Header only with org scope or full-line visibility; `order_slices` otherwise (§27.4) |
 | C21 | DB role cutover | Remove `oms_system` in one step | Expand/contract with `OMS_DB_ROLE_MODE` flag (§27 round 3) |
 | C22 | Acceptance-test ownership | Tests #11/#13 shared by two milestones | Split into 11a/11b and 13a/13b with single owners (§20) |
+| C23 | Provider payouts as cash | Gateway/carrier/marketplace payouts debited 1000 on provider report | 1050 funds in transit until a bank line proves receipt (docs/11, remediation B5) |
+| C24 | Consolidated FP&A for portfolio users | Waterfall without `portfolio_id` returned RLS-filtered consolidated data to any user | Consolidated = org scope; entity reports need entity scope (remediation C1) |

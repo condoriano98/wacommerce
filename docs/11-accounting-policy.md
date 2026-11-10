@@ -71,6 +71,24 @@ Journal fixtures (executable test data at Milestone 1; amounts IDR):
 Invariants: every journal balances (deferred trigger); stock subledger value = 1200 + 1250 per (legal entity, portfolio);
 contract liabilities = Σ prepaid undelivered order value; COD/marketplace receivables = Σ open expected settlements.
 
+## Remediation amendments (2026-11-10, pending accountant confirmation — G-ACC1)
+
+- **Verified cash (B5).** Provider-reported payouts (gateway disbursement, carrier withdrawal, marketplace payout,
+  supplier refund, COD remitted to bank) are booked to **1050 Funds in transit to bank (unverified payouts)**. Only a
+  bank statement line of the same legal entity, carrying the payout reference and the exact amount, moves the amount
+  to **1000** (`bank_receipt`, in the original portfolio/order dimensions). 1050 is never opening cash in forecasts.
+- **Manual-transfer application order (B1).** A bank-matched transfer clears, per line: (1) the open recognised
+  receivable 1105 (capped at its balance), (2) amounts written off and not yet recovered (Cr 5700), (3) the rest as a
+  customer advance 2200 for the undelivered part, pro rata to each line's undelivered charge.
+- **Inventory cost (B2).** Goods in transit and COGS carry the exact cost consumed from each warehouse balance at
+  pickup (`shipment_cost_allocations`); failed delivery restores that cost to the same balance (moving average
+  re-computed); after-delivery returns use the delivered cost.
+- **COD (B3).** Collectible per shipment = its share of each line's goods and shipping (split by quantity); a failed
+  COD delivery reclassifies the carrier cost accrued against 1100 to 2010.
+- **Marketplace settlement (B4).** Fees, withheld tax and payout are allocated to order items by item gross; fee
+  true-up per item against its own accrual; each portfolio's 1110 clears.
+- **Posting identity (A2).** One journal per (organization, source_type, source_id), enforced by the database.
+
 ## Executable fixtures
 `docs/fixtures/journals.yaml` encodes F1–F13 (F3a/F3b split; F13 credit losses). The YAML balance check is a sanity
 test only; acceptance test #19 executes the real OMS services against PostgreSQL and compares the produced ledger lines

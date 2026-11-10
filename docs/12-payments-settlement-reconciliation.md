@@ -25,3 +25,13 @@ lost_or_damaged, refund_requested, cod_settlement_mismatch, cod_not_remitted, su
 supplier_price_drift, supplier_canceled, dropship_late, wrong_item, payment_mismatch, marketplace_settlement_mismatch,
 duplicate_order, oversold_marketplace, manual_review, **bank_unmatched**, **stock_count_variance**,
 **ad_spend_unallocated**. Cases carry exposure + ageing; SLA breaches alert.
+
+## Remediation amendments (2026-11-10)
+
+- **Bank proof for payouts.** Every provider-reported payout registers a `bank_payout` reconciliation item (token,
+  legal entity, source journals). `match_bank_lines` matches manual transfers first, then payouts: same legal entity,
+  token in the bank reference, exact amount. Unmatched payouts age into `bank_unmatched` cases (SLA 3 days).
+- **Marketplace reconciliation** compares the value received (payout + creditable withholding) with the receivable
+  expected at delivery; a fee above the accrual is booked as a true-up **and** opens a variance case for review.
+  Multi-portfolio orders get an org-level item; later partial deliveries raise an open expectation.
+- **COD expectations** are per shipment and deduct only that shipment's carrier cost and COD fee.
