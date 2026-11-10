@@ -41,6 +41,15 @@ UNBAL=$(q $WORK $DRILL_PORT $SRC_DB "select count(*) from (select journal_id fro
 HEAD=$(q $WORK $DRILL_PORT $SRC_DB "select version_num from alembic_version")
 MARKER=$(q $WORK $DRILL_PORT $SRC_DB "select count(*) from organizations where name like 'dr-drill-marker-%'")
 RLS=$(q $WORK $DRILL_PORT $SRC_DB "select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relkind = 'r' and c.relforcerowsecurity")
+# What must be reconciled with providers before workers resume (remediation E4; mirrors invariants.POST_RESTORE):
+# sent-but-unconfirmed external operations are resolved by lookup or by a human, never re-sent blindly.
+POST=$(q $WORK $DRILL_PORT $SRC_DB "select json_build_object(
+  'outbox_pending', (select count(*) from outbox_messages where status = 'pending'),
+  'outbox_dead', (select count(*) from outbox_messages where status = 'dead'),
+  'external_operations_sent_unconfirmed', (select count(*) from external_operations where status = 'sent'),
+  'external_operations_uncertain', (select count(*) from external_operations where status = 'uncertain'),
+  'payouts_awaiting_bank_proof', (select count(*) from reconciliation_items where kind = 'bank_payout' and status = 'open'),
+  'legacy_duplicate_postings', (select count(*) from journals where legacy_duplicate))")
 [ "$UNBAL" = "0" ] && [ "$HEAD" = "$SRC_HEAD" ] || OK=false
 T_VERIFIED=$(ts)
 secs() { python3 -c "from datetime import datetime as d;f=lambda s:d.fromisoformat(s.replace('Z','+00:00'));print(round((f('$2')-f('$1')).total_seconds(),3))"; }
@@ -50,5 +59,6 @@ cat <<JSON
  "rto_seconds": $(secs $T_RESTORE_START $T_VERIFIED), "rpo_seconds_measured": $(secs $T_BACKUP_START $T_FAILURE),
  "post_backup_write_lost": $([ "$MARKER" = "0" ] && echo true || echo false), "row_counts_match": $OK,
  "unbalanced_journals": $UNBAL, "schema_head": "$HEAD", "tables_with_forced_rls": $RLS, "mismatches": "${DETAILS# }",
+ "post_restore": $POST,
  "dump_bytes": $(stat -c %s $WORK/$SRC_DB.dump)}
 JSON

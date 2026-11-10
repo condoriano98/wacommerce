@@ -8,6 +8,7 @@ import uuid
 from datetime import timedelta
 from decimal import Decimal as D
 
+import pytest
 from sqlalchemy import func, select, text
 
 import app.registry  # noqa: F401
@@ -22,6 +23,22 @@ from app.modules.finance import posting
 from tests.conftest import owner_session
 from tests.test_accounting_services import _manual_pay, _match, _order, _pay_gateway, _release_policy, assert_balanced
 from tests.world import build_world, principal
+
+
+@pytest.fixture(autouse=True)
+def _invariants_hold_after_each_scenario(request):
+    """Phase F: every remediation scenario must leave the tenant's books invariant-clean (not just balanced)."""
+    t = request.getfixturevalue("tenant") if "tenant" in request.fixturenames else None
+    yield
+    if t is None:
+        return
+    from app.core.db import worker_session
+    from app.modules import invariants
+
+    with worker_session(t.org_id) as s:
+        found = invariants.run(s, t.org_id)
+        s.rollback()  # do not leave invariant cases behind in the test database
+    assert found == {}, found
 
 
 def _second_warehouse(t, w, code: str, qty: int, unit_cost: D) -> uuid.UUID:
@@ -552,3 +569,36 @@ def test_E2_persistent_failure_dead_letters_and_escalates_but_the_case_stays_ope
         assert s.execute(text("select count(*) from exception_events where case_id = :c and "
                               "event = 'notification_failed'"), {"c": case_id}).scalar() == 1
     mockstore.reset("notify")
+
+
+# --- Phase F invariants detect violations -----------------------------------------------------------------------
+
+
+def test_F_invariants_detect_overcleared_receivable_and_inventory_drift():
+    from app.core.db import worker_session
+    from app.modules import invariants
+    from tests.conftest import make_tenant
+
+    t = make_tenant()
+    w = build_world(t)
+    with owner_session() as s:
+        # manufacture drift: stock subledger no longer equals GL (someone edited a moving average)
+        s.execute(text("update inventory_balances set avg_unit_cost = avg_unit_cost + 1000 where organization_id = :o "
+                       "and sku_id = :s"), {"o": t.org_id, "s": w.sku["A1"].id})
+    oid = _order(t, w, [("A1", 1, "0")])
+    with owner_session() as s:
+        it = s.execute(text("select id, portfolio_id from order_items where order_id = :o"), {"o": oid}).one()
+        jid = uuid.uuid4()
+        s.execute(text("insert into journals (id, organization_id, source_type, source_id) "
+                       "values (:j, :o, 'manual_test', :j)"), {"j": jid, "o": t.org_id})
+        for n, (acct, dr, cr) in enumerate((("1000", 500, 0), ("1105", 0, 500)), start=1):
+            s.execute(text("insert into ledger_entries (id, organization_id, created_at, journal_id, line_no, "
+                           "account_code, portfolio_id, order_id, order_item_id, debit, credit, accounting_date, "
+                           "source_type, source_id, event_time, posting_rule_version, legal_entity_id, currency) values "
+                           "(gen_random_uuid(), :o, now(), :j, :n, :a, :p, :oid, :i, :d, :c, current_date, "
+                           "'manual_test', :j, now(), 2, :le, 'IDR')"),
+                      {"o": t.org_id, "j": jid, "n": n, "a": acct, "p": it.portfolio_id, "oid": oid, "i": it.id,
+                       "d": dr, "c": cr, "le": t.legal_entity_id})
+    with worker_session(t.org_id) as s:
+        found = invariants.run(s, t.org_id)
+    assert "transfer_receivable_negative" in found and "inventory_subledger_vs_gl" in found
