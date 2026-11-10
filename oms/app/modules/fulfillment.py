@@ -356,8 +356,9 @@ def apply_shipment_event(session: Session, sh: Shipment, carrier_status: str, oc
     res = session.execute(insert(ShipmentEvent).values(
         id=uuid.uuid4(), created_at=utcnow(), organization_id=sh.organization_id, shipment_id=sh.id,
         order_id=sh.order_id, status=carrier_status, occurred_at=occurred_at, raw=raw)
-        .on_conflict_do_nothing(index_elements=["shipment_id", "status", "occurred_at"]))
-    if res.rowcount == 0:
+        .on_conflict_do_nothing(index_elements=["shipment_id", "status", "occurred_at"])
+        .returning(ShipmentEvent.id)).scalar()
+    if res is None:  # duplicate event (rowcount is not reliable for ORM-enabled inserts: use RETURNING)
         return False
     if RANK.get(carrier_status, 0) < RANK.get(sh.status, 0) or sh.status in ("delivered", "returned"):
         return False  # stale/out-of-order or terminal

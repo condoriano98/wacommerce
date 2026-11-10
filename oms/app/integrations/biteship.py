@@ -10,6 +10,7 @@ Facts used (documentation-verified 2026-11-10, NOT sandbox-verified — see docs
 """
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Protocol
 
@@ -47,7 +48,8 @@ class MockBiteship:
                 raise Rejected(f"{DUPLICATE_REFERENCE} duplicate reference_id")
             oid = f"bs-{len(orders) + 1:06d}"
             resp = {"ref": oid, "reference_id": req.reference_id, "waybill_id": f"WB{len(orders) + 1:08d}",
-                    "price": "12000", "cod_amount": str(req.cod_amount), "status": "confirmed"}
+                    "price": "12000", "cod_amount": str(req.cod_amount), "status": "confirmed",
+                    "updated_at": datetime.now(UTC).isoformat()}
             orders[oid] = resp
         mockstore.fault_after_accept("biteship", "create_order")
         return resp
@@ -55,6 +57,11 @@ class MockBiteship:
     def get_order(self, order_id: str) -> dict | None:
         with mockstore.state("biteship") as st:
             return st.get("orders", {}).get(order_id)
+
+    @staticmethod
+    def set_status(order_id: str, status: str, updated_at: str) -> None:  # test helper: courier progress
+        with mockstore.state("biteship") as st:
+            st["orders"][order_id].update(status=status, updated_at=updated_at)
 
     @staticmethod
     def bookings_for(reference_id: str) -> list[dict]:  # test helper: provider-side truth

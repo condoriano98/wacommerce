@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     chatwoot_base_url: str = "http://chatwoot.local"
     # HMAC secret for Chatwoot API-channel callbacks (X-Chatwoot-Signature over "{timestamp}.{body}").
     chatwoot_webhook_secret: str = "dev-chatwoot-webhook-secret"
+    # DOKU notification signature secret (merchant secret key; from the secret store in deployed environments).
+    doku_notification_secret: str = "dev-doku-secret"
+    doku_notification_path: str = "/webhooks/doku"
 
     outbox_max_attempts: int = 8
     capi_max_event_age_days: int = 7

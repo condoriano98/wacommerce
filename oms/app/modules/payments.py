@@ -93,8 +93,9 @@ def record_gateway_notification(session: Session, *, provider: str, notification
     res = session.execute(insert(PaymentNotification).values(
         id=uuid.uuid4(), created_at=utcnow(), organization_id=p.organization_id, provider=provider,
         notification_id=notification_id, payment_id=p.id, raw=raw, verified=True)
-        .on_conflict_do_nothing(index_elements=["provider", "notification_id"]))
-    if res.rowcount == 0:
+        .on_conflict_do_nothing(index_elements=["provider", "notification_id"])
+        .returning(PaymentNotification.id)).scalar()
+    if res is None:  # duplicate notification
         return "duplicate"
     order = session.get(Order, p.order_id, with_for_update=True)
     if verified_status != "paid":
@@ -191,8 +192,9 @@ def import_bank_statement(session: Session, principal: Principal, bank_account_i
             id=uuid.uuid4(), created_at=utcnow(), organization_id=principal.org_id, bank_account_id=bank_account_id,
             booked_at=r["booked_at"], amount=Decimal(str(r["amount"])), reference=r.get("reference"),
             counterparty=r.get("counterparty"), import_batch=batch, fingerprint=fp)
-            .on_conflict_do_nothing(index_elements=["bank_account_id", "fingerprint"]))
-        n += res.rowcount
+            .on_conflict_do_nothing(index_elements=["bank_account_id", "fingerprint"])
+            .returning(BankStatementLine.id)).scalar()
+        n += res is not None
     return n
 
 

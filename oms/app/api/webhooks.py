@@ -10,7 +10,7 @@ from fastapi.responses import PlainTextResponse
 
 from app.core.config import get_settings
 from app.core.deps import CurrentPrincipal, DbSession
-from app.modules import messaging
+from app.modules import messaging, provider_webhooks
 
 router = APIRouter(tags=["webhooks"])
 
@@ -35,6 +35,18 @@ async def chatwoot_receive(request: Request, x_chatwoot_timestamp: Annotated[str
                            x_chatwoot_signature: Annotated[str | None, Header()] = None) -> dict:
     raw = await request.body()
     return await run_in_threadpool(messaging.receive_chatwoot, raw, x_chatwoot_timestamp, x_chatwoot_signature)
+
+
+@router.post("/webhooks/doku")
+async def doku_receive(request: Request) -> dict:
+    raw = await request.body()
+    return await run_in_threadpool(provider_webhooks.receive_doku, raw, dict(request.headers))
+
+
+@router.post("/webhooks/biteship")
+async def biteship_receive(request: Request) -> dict:
+    raw = await request.body()
+    return await run_in_threadpool(provider_webhooks.receive_biteship, raw)
 
 
 @router.post("/wa-events/{event_id}/replay", tags=["messaging"], status_code=202)
