@@ -7,7 +7,6 @@ from sqlalchemy.exc import DBAPIError, IntegrityError, ProgrammingError
 
 from app.core.db import tenant_session
 from app.core.outbox import HANDLERS, dispatch_due, enqueue
-from app.models.finance import LedgerEntry
 from app.models.governance import OutboxMessage
 from app.models.org import Portfolio
 from app.modules.finance import accounts as acct
@@ -88,7 +87,7 @@ def test_unbalanced_journal_rejected_by_database(tenant):
 
 def test_ledger_is_append_only_for_app_role(tenant):
     with tenant_session(tenant.org_id, tenant.users["owner"]) as s:
-        post_journal(s, tenant.org_id, source_type="test", source_id="1", lines=[
+        post_journal(s, tenant.org_id, source_type="test", source_id="1", legal_entity_id=tenant.legal_entity_id, lines=[
             JournalLine(acct.CASH, debit=Decimal("10"), portfolio_id=tenant.portfolios["A"]),
             JournalLine(acct.OWNER_CAPITAL, credit=Decimal("10"), portfolio_id=tenant.portfolios["A"])])
     with pytest.raises(ProgrammingError):
@@ -96,49 +95,37 @@ def test_ledger_is_append_only_for_app_role(tenant):
             s.execute(text("update ledger_entries set debit = 0"))
 
 
-def test_approval_separation_of_duties_and_capital_reallocation(tenant, client):
-    # Seed portfolio A with cash via an approved injection.
-    r = client.post("/capital/reallocations", headers=tenant.headers("owner"), json={
-        "to_portfolio_id": str(tenant.portfolios["A"]), "amount": "50000000", "reason": "initial funding"})
-    approval_id = r.json()["approval_id"]
-    # Requester cannot approve their own request.
-    r = client.post(f"/approvals/{approval_id}/decision", headers=tenant.headers("owner"),
-                    json={"approve": True, "reason": "self"})
-    assert r.status_code == 403
-    r = client.post(f"/approvals/{approval_id}/decision", headers=tenant.headers("owner2"),
-                    json={"approve": True, "reason": "ok"})
+def test_approval_separation_of_duties_and_capital_reallocation_without_cash(tenant, client):
+    """Acceptance #16: reallocating mandates never creates bank/cash journals or inflates assets."""
+    pa, pb = tenant.portfolios["A"], tenant.portfolios["B"]
+    r = client.put(f"/portfolios/{pa}/mandates", headers=tenant.headers("owner"), json={
+        "category": "advertising", "amount": "27000000", "effective_from": "2026-11-01", "reason": "Rp100M plan"})
     assert r.status_code == 200, r.text
-    assert client.post(f"/capital/reallocations/{approval_id}/execute",
-                       headers=tenant.headers("owner")).status_code == 200
-    # Executing twice is refused (approval consumed).
-    assert client.post(f"/capital/reallocations/{approval_id}/execute",
-                       headers=tenant.headers("owner")).status_code == 409
-
-    # Move Rp10M from A to B.
     r = client.post("/capital/reallocations", headers=tenant.headers("owner"), json={
-        "from_portfolio_id": str(tenant.portfolios["A"]), "to_portfolio_id": str(tenant.portfolios["B"]),
+        "from_portfolio_id": str(pa), "to_portfolio_id": str(pb), "category": "advertising",
         "amount": "10000000", "reason": "scale B"})
     aid = r.json()["approval_id"]
-    # Finance manager may approve capital (tier 0 requires owner) -> refused; second owner approves.
+    # Requester cannot approve own request; finance cannot approve capital (owner-only tier).
+    assert client.post(f"/approvals/{aid}/decision", headers=tenant.headers("owner"),
+                       json={"approve": True, "reason": "self"}).status_code == 403
     assert client.post(f"/approvals/{aid}/decision", headers=tenant.headers("finance"),
                        json={"approve": True, "reason": "ok"}).status_code == 403
     assert client.post(f"/approvals/{aid}/decision", headers=tenant.headers("owner2"),
                        json={"approve": True, "reason": "ok"}).status_code == 200
     assert client.post(f"/capital/reallocations/{aid}/execute", headers=tenant.headers("owner")).status_code == 200
+    assert client.post(f"/capital/reallocations/{aid}/execute", headers=tenant.headers("owner")).status_code == 409
 
-    from app.modules.org import portfolio_cash
+    from app.modules import capital
 
     with tenant_session(tenant.org_id, tenant.users["owner"]) as s:
-        assert portfolio_cash(s, tenant.portfolios["A"]) == Decimal("40000000")
-        assert portfolio_cash(s, tenant.portfolios["B"]) == Decimal("10000000")
-        # Inter-portfolio capital nets to zero on consolidation.
-        net = s.execute(text("select coalesce(sum(debit - credit), 0) from ledger_entries "
-                             "where account_code = '3100'")).scalar()
-        assert net == 0
-    # Portfolio-B manager cannot see Portfolio-A ledger lines.
+        assert capital.available(s, pa, "advertising") == Decimal("17000000")
+        assert capital.available(s, pb, "advertising") == Decimal("10000000")
+        assert s.execute(text("select count(*) from ledger_entries")).scalar() == 0  # no cash manufactured
+    # Portfolio-B manager cannot see Portfolio-A mandate events.
+    from app.models.capital import CapitalAllocationEvent
+
     with tenant_session(tenant.org_id, tenant.users["pm_b"]) as s:
-        rows = s.scalars(select(LedgerEntry.portfolio_id).distinct()).all()
-        assert set(rows) == {tenant.portfolios["B"]}
+        assert {e.portfolio_id for e in s.scalars(select(CapitalAllocationEvent))} == {pb}
 
 
 def test_outbox_dedupes_and_retries(tenant):
@@ -159,9 +146,9 @@ def test_outbox_dedupes_and_retries(tenant):
     from app.models.base import utcnow
 
     dispatch_due(now=utcnow() + timedelta(hours=2))
-    from app.core.db import system_session
+    from tests.conftest import owner_session
 
-    with system_session() as s:
+    with owner_session() as s:
         msg = s.scalars(select(OutboxMessage).where(OutboxMessage.organization_id == tenant.org_id)).one()
         assert msg.status == "done" and msg.attempts == 2
     assert calls == [1, 1]

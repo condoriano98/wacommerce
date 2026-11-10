@@ -116,13 +116,19 @@ TABLE_POLICIES: dict[str, tuple[str, str]] = {
     "bank_statement_lines": (ORG_SCOPE, ""),
     "reconciliation_runs": (ORG_SCOPE, ""),
     "reconciliation_items": (PORTFOLIO_STRICT, "portfolio_id"),
-    "external_operations": (ORG_SCOPE, ""),
+    "external_operations": ("org_scope_read", ""),
     "dead_letters": (ORG_SCOPE, ""),
 }
 
 # V3.1 overrides applied by migration 0005 (policies are dropped and recreated for these tables).
 SHIPMENT = "shipment"
+ORG_SCOPE_READ = "org_scope_read"  # any org member may INSERT (outbox, logs); only org-scope roles may read/modify
+
 V31_OVERRIDES: dict[str, tuple[str, str]] = {
+    "outbox_messages": (ORG_SCOPE_READ, ""),
+    "agent_execution_logs": (ORG_SCOPE_READ, ""),
+    "inbound_webhooks": (ORG_SCOPE_READ, ""),
+    "payment_notifications": (ORG_SCOPE_READ, ""),
     # Shipments belong to a single-portfolio fulfillment group; legacy rows (no portfolio) need full order visibility.
     "shipments": (SHIPMENT, "id"),
     "shipment_events": (SHIPMENT, "shipment_id"),
@@ -186,6 +192,8 @@ def visibility_expr(kind: str, col: str) -> tuple[str, str]:
         return f"{ORG_MATCH} and app_customer_visible({col})", ORG_MATCH
     if kind == PLATFORM_ACCOUNT:
         return f"{ORG_MATCH} and app_platform_account_visible({col})", ORG_MATCH
+    if kind == ORG_SCOPE_READ:
+        return f"{ORG_MATCH} and app_has_org_scope()", ORG_MATCH
     if kind == SHIPMENT:
         return f"{ORG_MATCH} and app_shipment_visible({col})", ORG_MATCH
     if kind == PLATFORM_ACCOUNT_NULLABLE:

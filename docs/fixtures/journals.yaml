@@ -55,7 +55,8 @@ fixtures:
   F10_failed_delivery_rts:
     - {event: picked_by_carrier, lines: [[1250, 60000, 0], [1200, 0, 60000]]}
     - {event: returned_to_warehouse, lines: [[1200, 60000, 0], [1250, 0, 60000]]}
-    - {event: shipping_and_return_cost, lines: [[5100, 12000, 0], [5500, 12000, 0], [2010, 0, 24000]]}
+    - {event: carrier_cost_at_pickup, lines: [[5100, 12000, 0], [2010, 0, 12000]]}
+    - {event: return_shipping_cost, lines: [[5500, 12000, 0], [2010, 0, 12000]]}
   F11_supplier_cancellation:
     - {event: supplier_purchase_paid, lines: [[1210, 100000, 0], [1000, 0, 100000]]}
     - {event: supplier_canceled, lines: [[1120, 100000, 0], [1210, 0, 100000]]}

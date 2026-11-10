@@ -4,14 +4,14 @@ import uuid
 from datetime import datetime
 
 from fastapi import HTTPException, status
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.audit import audit
 from app.core.authz import Principal
-from app.core.db import system_session
+from app.core.db import worker_session
 from app.core.security import decrypt_secret, encrypt_secret
-from app.models.platforms import AccountCredential, AccountPortfolioLink, PlatformAccount
+from app.models.platforms import AccountPortfolioLink, PlatformAccount
 
 
 def register_account(session: Session, principal: Principal, *, provider: str, provider_account_id: str,
@@ -50,12 +50,11 @@ def list_credentials(session: Session, account_id: uuid.UUID) -> list[dict]:
 
 
 def read_secret(org_id: uuid.UUID, account_id: uuid.UUID, name: str) -> str | None:
-    """Adapters only (system role). Never call from request handlers that return data to clients."""
-    with system_session(org_id) as session:
-        cred = session.scalars(select(AccountCredential).where(
-            AccountCredential.platform_account_id == account_id, AccountCredential.name == name,
-            AccountCredential.organization_id == org_id)).first()
-        return decrypt_secret(cred.ciphertext) if cred else None
+    """Adapters only: runs as the worker role through the audited ``read_credential`` definer function.
+    Never call from request handlers that return data to clients."""
+    with worker_session(org_id) as session:
+        cipher = session.execute(text("select read_credential(:a, :n)"), {"a": account_id, "n": name}).scalar()
+        return decrypt_secret(bytes(cipher)) if cipher else None
 
 
 def require_live(account: PlatformAccount) -> None:

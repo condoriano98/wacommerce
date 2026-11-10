@@ -13,6 +13,7 @@ class Warehouse(OrgMixin, Base):
 
     __tablename__ = "warehouses"
     name: Mapped[str]
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("legal_entities.id"))
     city: Mapped[str]
     postal_code: Mapped[str]
     address: Mapped[str]

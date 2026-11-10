@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app.models.base import utcnow
 from app.models.marketing import ConversionOutbox
 from app.models.orders import Order
-from app.modules import orders
+from app.modules import events
 
 META_BM = "meta_business_messaging"
 BM_SUPPORTED = {
@@ -51,38 +51,44 @@ def _order_event(session: Session, order: Order, event_name: str, *, value: bool
                   dataset_account_id=order.platform_account_id)
 
 
-@orders.on_enter("confirmed")
-def _order_created(session, order, frm, data):
-    _order_event(session, order, "OrderCreated")
+@events.subscribe("order_confirmed")
+def _order_created(session, data):
+    _order_event(session, data["order"], "OrderCreated")
 
 
-@orders.on_enter("payment_verified")
-def _prepaid_purchase(session, order, frm, data):
-    # Prepaid purchases are recognised for measurement only after verified payment and order acceptance.
-    if order.payment_method != "cod":
+@events.subscribe("payment_captured")
+def _prepaid_purchase_gateway(session, data):
+    _order_event(session, data["order"], "Purchase", value=True)
+
+
+@events.subscribe("payment_bank_matched")
+def _prepaid_purchase_bank(session, data):
+    # Prepaid purchases count only once money is verified (captured or bank-matched), never on a receipt.
+    _order_event(session, data["order"], "Purchase", value=True)
+
+
+@events.subscribe("shipment_picked")
+def _shipped(session, data):
+    _order_event(session, data["order"], "OrderShipped", occurrence=str(data["shipment"].id))
+
+
+@events.subscribe("shipment_delivered")
+def _delivered(session, data):
+    order = data["order"]
+    _order_event(session, order, "OrderDelivered", occurrence=str(data["shipment"].id))
+    if order.payment_method == "cod":  # COD: delivered = collected by the courier; revenue recognised now too
         _order_event(session, order, "Purchase", value=True)
 
 
-@orders.on_enter("shipped")
-def _shipped(session, order, frm, data):
-    _order_event(session, order, "OrderShipped", occurrence=data.get("shipment_id", ""))
+@events.subscribe("items_canceled")
+def _canceled(session, data):
+    if data["order"].status == "canceled":
+        _order_event(session, data["order"], "OrderCanceled")
 
 
-@orders.on_enter("delivered")
-def _delivered(session, order, frm, data):
-    _order_event(session, order, "OrderDelivered")
-    if order.payment_method == "cod":  # COD: delivered = collected by courier
-        _order_event(session, order, "Purchase", value=True)
-
-
-@orders.on_enter("canceled")
-def _canceled(session, order, frm, data):
-    _order_event(session, order, "OrderCanceled")
-
-
-@orders.on_enter("returned")
-def _returned(session, order, frm, data):
-    _order_event(session, order, "OrderReturned")
+@events.subscribe("order_returned")
+def _returned(session, data):
+    _order_event(session, data["order"], "OrderReturned")
 
 
 def suppress_pending_for_customer(session: Session, customer_id: uuid.UUID, reason: str) -> int:

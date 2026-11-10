@@ -726,7 +726,8 @@ These items are part of the specification. Where an earlier section is less spec
    transaction GUCs (honoured only for server-side roles `oms_app`/`oms_worker`/`oms_webhook`). Reporting views live in
    schema `reporting`, owned by `oms_reporting_owner` (NOLOGIN, not a table owner, no BYPASSRLS, SELECT on needed base
    tables) and created with `security_invoker = false`, so base-table RLS evaluates `app_org()` → `session_user` mapping.
-   Per-org login roles `rpt_<org_short>` (NOINHERIT, member of nothing privileged, `CONNECTION LIMIT`,
+   Per-org login roles `rpt_<org_short>` (INHERIT, member only of `oms_reporting`, which holds nothing but the
+   reporting-schema grants; `CONNECTION LIMIT`,
    `statement_timeout`) get only `USAGE` on `reporting` + `SELECT` on PII-free aggregate views. Metabase native-query
    permission off for non-admin groups. Signed guest embeds with locked params = presentation only.
    **G-MB1 stays unverified** until PostgreSQL tests pass: reporting login cannot see another org's rows via views; `SELECT

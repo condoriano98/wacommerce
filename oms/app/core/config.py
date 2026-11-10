@@ -11,7 +11,12 @@ class Settings(BaseSettings):
     env: str = "dev"
     # Application role: subject to row-level security (no BYPASSRLS).
     database_url: str = "postgresql+psycopg://oms_app:oms_app@localhost:5432/oms"
-    # System role: BYPASSRLS, used only to resolve tenants for inbound webhooks and by the worker.
+    # ADR-014 backward-compatible cutover: "legacy" = V3.0 BYPASSRLS oms_system role for worker/webhooks;
+    # "v31" = oms_worker / oms_webhook roles subject to RLS (per-org system principals + definer resolvers).
+    db_role_mode: str = "v31"
+    worker_database_url: str = "postgresql+psycopg://oms_worker:oms_worker@localhost:5432/oms"
+    webhook_database_url: str = "postgresql+psycopg://oms_webhook:oms_webhook@localhost:5432/oms"
+    # Legacy only (removed by the contract migration).
     system_database_url: str = "postgresql+psycopg://oms_system:oms_system@localhost:5432/oms"
     # Owner role used by Alembic migrations.
     migration_database_url: str = "postgresql+psycopg://postgres@localhost:5432/oms"

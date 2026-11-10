@@ -37,6 +37,8 @@ def post_journal(
     accounting_date: date | None = None,
     memo: str | None = None,
     reverses_journal_id: uuid.UUID | None = None,
+    legal_entity_id: uuid.UUID | None = None,
+    event_time=None,
 ) -> uuid.UUID:
     lines = [ln for ln in lines if ln.debit or ln.credit]
     debit = sum((ln.debit for ln in lines), ZERO)
@@ -62,6 +64,9 @@ def post_journal(
                 source_id=source_id,
                 memo=ln.memo or memo,
                 reverses_journal_id=reverses_journal_id,
+                legal_entity_id=legal_entity_id,
+                event_time=event_time or utcnow(),
+                posting_rule_version=2,
             )
         )
     return journal_id

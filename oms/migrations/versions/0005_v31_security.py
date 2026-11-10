@@ -99,12 +99,26 @@ language sql stable security definer set search_path = public as
 $$ select u.id from users u where u.organization_id = p_org and u.is_service and u.name = 'system' limit 1 $$;
 
 -- Claim due outbox messages across orgs; the row lock lasts for the caller's transaction.
-create or replace function claim_due_outbox(p_limit int)
+create or replace function claim_due_outbox(p_limit int, p_now timestamptz default now())
 returns table (id uuid, organization_id uuid)
 language sql volatile security definer set search_path = public as
 $$ select o.id, o.organization_id from outbox_messages o
-   where o.status = 'pending' and o.next_attempt_at <= now()
+   where o.status = 'pending' and o.next_attempt_at <= p_now
    order by o.next_attempt_at limit p_limit for update skip locked $$;
+
+-- Outbox enqueue for any org member: INSERT .. ON CONFLICT also requires the SELECT policy, which only org-scope
+-- roles pass; this narrow definer pins the row to the caller's organization and returns whether it was new.
+create or replace function enqueue_outbox(p_topic text, p_key text, p_payload jsonb, p_next timestamptz)
+returns boolean language plpgsql volatile security definer set search_path = public as
+$$ declare n int; begin
+  if app_org() is null then raise exception 'no organization in context' using errcode = '42501'; end if;
+  insert into outbox_messages (id, organization_id, created_at, topic, dedupe_key, payload, status, attempts,
+                               next_attempt_at)
+  values (gen_random_uuid(), app_org(), now(), p_topic, p_key, p_payload, 'pending', 0, p_next)
+  on conflict (organization_id, dedupe_key) do nothing;
+  get diagnostics n = row_count;
+  return n = 1;
+end $$;
 
 -- Credential reads: worker role only; every read is audited.
 create or replace function read_credential(p_account uuid, p_name text) returns bytea
@@ -187,7 +201,7 @@ def upgrade() -> None:
         op.execute(f"revoke insert, update, delete on {t} from oms_runtime")
     op.execute("revoke execute on function read_credential(uuid, text) from public")
     op.execute("grant execute on function read_credential(uuid, text) to oms_worker")
-    for fn in ("claim_due_outbox(int)", "system_principal(uuid)"):
+    for fn in ("claim_due_outbox(int, timestamptz)", "system_principal(uuid)"):
         op.execute(f"revoke execute on function {fn} from public")
         op.execute(f"grant execute on function {fn} to oms_worker, oms_webhook")
     for fn in ("resolve_platform_account(text, text, text)", "resolve_payment(text, text)",
@@ -217,13 +231,17 @@ def upgrade() -> None:
 
     # Tenant-scoped composite foreign keys: a child can only reference a parent in the same organization.
     conn = op.get_bind()
-    tenant = {t.name for t in _tenant_tables()}
+    # Use the database's actual columns: later migrations may add model columns this revision must not touch.
+    existing = {(r[0], r[1]) for r in conn.execute(sa.text(
+        "select table_name, column_name from information_schema.columns where table_schema = 'public'")).all()}
+    tenant = {t.name for t in _tenant_tables() if (t.name, "organization_id") in existing}
     parents_done: set[str] = set()
     for t in _tenant_tables():
         for fk in t.foreign_keys:
             parent = fk.column.table
             col = fk.parent.name
-            if parent.name not in tenant or col == "organization_id" or fk.column.name != "id":
+            if t.name not in tenant or parent.name not in tenant or col == "organization_id" \
+                    or fk.column.name != "id" or (t.name, col) not in existing:
                 continue
             if parent.name not in parents_done:
                 exists = conn.execute(sa.text("select 1 from pg_constraint where conname = :n"),

@@ -64,6 +64,7 @@ def request_approval(
         idempotency_key=idempotency_key,
     )
     session.add(approval)
+    session.flush()  # referenced by the subject row in the same transaction
     audit(session, principal.org_id, "approval.requested", "human_approval", approval.id,
           actor_user_id=principal.user_id, portfolio_id=portfolio_id,
           after={"kind": kind, "amount": amount, "subject": f"{subject_type}:{subject_id}"})

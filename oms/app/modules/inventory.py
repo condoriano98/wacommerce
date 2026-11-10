@@ -38,7 +38,7 @@ def _balance(session: Session, org_id, portfolio_id, sku_id, warehouse_id, lock=
 
 
 def receive(session: Session, org_id: uuid.UUID, *, portfolio_id, sku_id, warehouse_id, qty: int,
-            unit_cost: Decimal, reference: str, paid: bool = True) -> InventoryBalance:
+            unit_cost: Decimal, reference: str, paid: bool = True, legal_entity_id=None) -> InventoryBalance:
     if qty <= 0:
         raise ValueError("qty must be positive")
     bal = _balance(session, org_id, portfolio_id, sku_id, warehouse_id)
@@ -48,8 +48,15 @@ def receive(session: Session, org_id: uuid.UUID, *, portfolio_id, sku_id, wareho
     session.add(InventoryMovement(organization_id=org_id, portfolio_id=portfolio_id, balance_id=bal.id,
                                   movement_type="receive", qty=qty, unit_cost=unit_cost,
                                   reference_type="receipt", reference_id=reference))
+    if legal_entity_id is None:
+        from app.models.inventory import Warehouse
+
+        wh = session.get(Warehouse, warehouse_id)
+        legal_entity_id = getattr(wh, "legal_entity_id", None)
+    bal.legal_entity_id = bal.legal_entity_id or legal_entity_id
     posting.inventory_purchase(session, org_id, amount=(unit_cost * qty).quantize(Decimal("0.01")),
-                               portfolio_id=portfolio_id, source_id=f"receipt:{reference}", paid=paid)
+                               portfolio_id=portfolio_id, source_id=reference, paid=paid,
+                               legal_entity_id=legal_entity_id)
     return bal
 
 
@@ -116,26 +123,66 @@ def convert_quote_holds(session: Session, quote_id: uuid.UUID, order_id: uuid.UU
     return list(holds)
 
 
-def ship_reserved(session: Session, org_id: uuid.UUID, order_id: uuid.UUID) -> dict[tuple, Decimal]:
-    """Consume order reservations when goods leave the warehouse. Returns unit cost per (portfolio, sku)."""
-    reservations = session.scalars(select(InventoryReservation).where(
-        InventoryReservation.order_id == order_id, InventoryReservation.status == "active")).all()
-    costs: dict[tuple, Decimal] = {}
+def pick_from_reservations(session: Session, org_id: uuid.UUID, order_id: uuid.UUID, portfolio_id: uuid.UUID,
+                           sku_id: uuid.UUID, qty: int, reference: str) -> Decimal:
+    """Carrier pickup: consume order reservations, on_hand -> in_transit. Returns moving-average unit cost."""
+    reservations = session.scalars(select(InventoryReservation).join(
+        InventoryBalance, InventoryBalance.id == InventoryReservation.balance_id).where(
+        InventoryReservation.order_id == order_id, InventoryReservation.status == "active",
+        InventoryReservation.portfolio_id == portfolio_id, InventoryBalance.sku_id == sku_id)
+        .with_for_update()).all()
+    remaining, cost = qty, Decimal("0")
     for r in reservations:
+        if remaining == 0:
+            break
+        take = min(remaining, r.qty)
         bal = session.get(InventoryBalance, r.balance_id, with_for_update=True)
-        bal.reserved -= r.qty
-        bal.on_hand -= r.qty
-        r.status = "consumed"
-        session.add(InventoryMovement(organization_id=org_id, portfolio_id=r.portfolio_id, balance_id=bal.id,
-                                      movement_type="ship", qty=-r.qty, unit_cost=bal.avg_unit_cost,
-                                      reference_type="order", reference_id=str(order_id)))
-        costs[(r.portfolio_id, bal.sku_id)] = bal.avg_unit_cost
-    return costs
+        bal.reserved -= take
+        bal.on_hand -= take
+        bal.in_transit += take
+        cost = bal.avg_unit_cost
+        r.qty -= take
+        if r.qty == 0:
+            r.qty, r.status = take, "consumed"
+        session.add(InventoryMovement(organization_id=org_id, portfolio_id=portfolio_id, balance_id=bal.id,
+                                      movement_type="ship", qty=-take, unit_cost=bal.avg_unit_cost,
+                                      reference_type="shipment", reference_id=reference))
+        remaining -= take
+    if remaining:
+        raise InsufficientStock(f"no reserved stock left for {remaining} units")
+    session.flush()
+    return cost
+
+
+def _transit_balance(session: Session, portfolio_id, sku_id) -> InventoryBalance:
+    bal = session.scalars(select(InventoryBalance).where(
+        InventoryBalance.portfolio_id == portfolio_id, InventoryBalance.sku_id == sku_id,
+        InventoryBalance.in_transit > 0).with_for_update()).first()
+    if bal is None:
+        raise InsufficientStock("no goods in transit for this SKU")
+    return bal
+
+
+def deliver_in_transit(session: Session, portfolio_id, sku_id, qty: int) -> None:
+    bal = _transit_balance(session, portfolio_id, sku_id)
+    bal.in_transit -= qty
+
+
+def return_in_transit(session: Session, org_id, portfolio_id, sku_id, qty: int, reference: str) -> Decimal:
+    """Failed delivery: goods come back to the warehouse (in_transit -> on_hand)."""
+    bal = _transit_balance(session, portfolio_id, sku_id)
+    bal.in_transit -= qty
+    bal.on_hand += qty
+    session.add(InventoryMovement(organization_id=org_id, portfolio_id=portfolio_id, balance_id=bal.id,
+                                  movement_type="return", qty=qty, unit_cost=bal.avg_unit_cost,
+                                  reference_type="rts", reference_id=reference))
+    return bal.avg_unit_cost
 
 
 def restock_return(session: Session, org_id: uuid.UUID, *, portfolio_id, sku_id, warehouse_id, qty: int,
-                   unit_cost: Decimal, order_id: uuid.UUID, resellable: bool) -> None:
-    """Returned goods: resellable -> back to inventory (reverse COGS); damaged -> loss."""
+                   unit_cost: Decimal, order_id: uuid.UUID, resellable: bool) -> Decimal:
+    """Returned goods (after delivery): resellable stock goes back on hand; the journal is posted by
+    ``posting.return_received``."""
     bal = _balance(session, org_id, portfolio_id, sku_id, warehouse_id)
     amount = (unit_cost * qty).quantize(Decimal("0.01"))
     if resellable:
@@ -145,10 +192,7 @@ def restock_return(session: Session, org_id: uuid.UUID, *, portfolio_id, sku_id,
         session.add(InventoryMovement(organization_id=org_id, portfolio_id=portfolio_id, balance_id=bal.id,
                                       movement_type="return", qty=qty, unit_cost=unit_cost,
                                       reference_type="order", reference_id=str(order_id)))
-    post_journal(session, org_id, source_type="return_restock", source_id=f"{order_id}:{sku_id}", lines=[
-        JournalLine(A.INVENTORY if resellable else A.RETURN_LOSSES, debit=amount, portfolio_id=portfolio_id,
-                    order_id=order_id),
-        JournalLine(A.COGS, credit=amount, portfolio_id=portfolio_id, order_id=order_id)])
+    return amount
 
 
 def transfer_between_portfolios(session: Session, org_id: uuid.UUID, *, from_portfolio, to_portfolio, sku_id,
@@ -168,8 +212,8 @@ def transfer_between_portfolios(session: Session, org_id: uuid.UUID, *, from_por
                                       movement_type=mtype, qty=q, unit_cost=cost, reference_type="transfer",
                                       reference_id=reference))
     amount = (cost * qty).quantize(Decimal("0.01"))
-    post_journal(session, org_id, source_type="inventory_transfer", source_id=reference, lines=[
+    # Same legal entity: inventory changes portfolio dimension at cost; the pair nets to zero on consolidation.
+    post_journal(session, org_id, source_type="inventory_transfer", source_id=reference,
+                 legal_entity_id=src.legal_entity_id, lines=[
         JournalLine(A.INVENTORY, debit=amount, portfolio_id=to_portfolio),
-        JournalLine(A.INTER_PORTFOLIO_CAPITAL, credit=amount, portfolio_id=to_portfolio),
-        JournalLine(A.INTER_PORTFOLIO_CAPITAL, debit=amount, portfolio_id=from_portfolio),
         JournalLine(A.INVENTORY, credit=amount, portfolio_id=from_portfolio)])

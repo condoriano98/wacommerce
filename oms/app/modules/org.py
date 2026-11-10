@@ -5,16 +5,12 @@ from datetime import date
 from decimal import Decimal
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.audit import audit
 from app.core.authz import Principal
-from app.models.base import utcnow
-from app.models.org import CapitalAllocation, CapitalScenario, Portfolio, PortfolioBudget, RiskPolicy
-from app.modules import approvals
-from app.modules.finance import accounts as acct
-from app.modules.finance.ledger import JournalLine, post_journal
+from app.models.org import CapitalScenario, Portfolio, PortfolioBudget, RiskPolicy
 
 DEFAULT_RISK_POLICIES = [
     # key, threshold, comparator, severity (editable scenario inputs, not benchmarks)
@@ -89,68 +85,3 @@ def override_risk_threshold(session: Session, principal: Principal, policy_id: u
           actor_user_id=principal.user_id, portfolio_id=policy.portfolio_id, before=before,
           after={"threshold": threshold, "reason": reason})
     return policy
-
-
-def request_capital_reallocation(session: Session, principal: Principal, from_portfolio_id: uuid.UUID | None,
-                                 to_portfolio_id: uuid.UUID, amount: Decimal, reason: str):
-    principal.require("portfolio.read", to_portfolio_id)
-    return approvals.request_approval(
-        session, principal, kind="capital_reallocation", subject_type="portfolio",
-        subject_id=str(to_portfolio_id), amount=amount,
-        payload={"from_portfolio_id": str(from_portfolio_id) if from_portfolio_id else None,
-                 "to_portfolio_id": str(to_portfolio_id), "reason": reason},
-        portfolio_id=None, idempotency_key=f"capital:{from_portfolio_id}:{to_portfolio_id}:{amount}:{reason}",
-    )
-
-
-def execute_capital_reallocation(session: Session, principal: Principal, approval_id: uuid.UUID) -> CapitalAllocation:
-    """Moves capital between portfolios as paired journals that net to zero on consolidation."""
-    from app.models.governance import HumanApproval
-
-    pending = session.get(HumanApproval, approval_id)
-    if pending is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "approval not found")
-    approval = approvals.require_approved(session, approval_id, "capital_reallocation", pending.subject_id)
-    p = approval.payload
-    from_id = uuid.UUID(p["from_portfolio_id"]) if p.get("from_portfolio_id") else None
-    to_id = uuid.UUID(p["to_portfolio_id"])
-    amount = approval.amount
-    if from_id is not None:
-        available = portfolio_cash(session, from_id)
-        if available < amount:
-            raise HTTPException(status.HTTP_409_CONFLICT, f"source portfolio cash {available} < {amount}")
-    if from_id is not None:
-        # Paired journals: cash moves between portfolios; 3100 nets to zero on consolidation.
-        lines = [
-            JournalLine(acct.CASH, debit=amount, portfolio_id=to_id),
-            JournalLine(acct.INTER_PORTFOLIO_CAPITAL, credit=amount, portfolio_id=to_id),
-            JournalLine(acct.INTER_PORTFOLIO_CAPITAL, debit=amount, portfolio_id=from_id),
-            JournalLine(acct.CASH, credit=amount, portfolio_id=from_id),
-        ]
-        source_type = "capital_transfer"
-    else:
-        lines = [
-            JournalLine(acct.CASH, debit=amount, portfolio_id=to_id),
-            JournalLine(acct.OWNER_CAPITAL, credit=amount, portfolio_id=to_id),
-        ]
-        source_type = "capital_injection"
-    journal_id = post_journal(session, principal.org_id, source_type=source_type, source_id=str(approval.id),
-                              memo=p.get("reason"), lines=lines)
-    allocation = CapitalAllocation(organization_id=principal.org_id, from_portfolio_id=from_id, to_portfolio_id=to_id,
-                                   amount=amount, reason=p.get("reason", ""), approval_id=approval.id,
-                                   journal_id=journal_id, effective_at=utcnow())
-    session.add(allocation)
-    audit(session, principal.org_id, "capital.reallocated", "capital_allocation", allocation.id,
-          actor_user_id=principal.user_id, after={"from": from_id, "to": to_id, "amount": amount})
-    return allocation
-
-
-def portfolio_cash(session: Session, portfolio_id: uuid.UUID) -> Decimal:
-    from app.models.finance import LedgerEntry
-
-    total = session.scalar(
-        select(func.coalesce(func.sum(LedgerEntry.debit - LedgerEntry.credit), 0)).where(
-            LedgerEntry.portfolio_id == portfolio_id, LedgerEntry.account_code == acct.CASH
-        )
-    )
-    return Decimal(total)

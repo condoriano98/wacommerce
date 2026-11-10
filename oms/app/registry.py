@@ -1,3 +1,3 @@
-"""Import modules that register order-state hooks and outbox handlers. Imported by the API and the worker."""
+"""Import modules that register event subscribers and outbox handlers. Imported by the API and the worker."""
 
-from app.modules import fulfillment  # noqa: F401
+from app.modules import conversions, fulfillment, orders, procurement, settlements  # noqa: F401
