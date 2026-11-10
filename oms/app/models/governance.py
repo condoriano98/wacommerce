@@ -185,6 +185,21 @@ class ExternalOperationAttempt(OrgMixin, Base):
     error: Mapped[str | None]
 
 
+class NotificationDelivery(OrgMixin, Base):
+    """One risk-alert notification per (case, channel): status, attempts, last error, correlation id (E2)."""
+
+    __tablename__ = "notification_deliveries"
+    case_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("exception_cases.id"), index=True)
+    channel: Mapped[str]
+    recipient_role: Mapped[str]
+    status: Mapped[str] = mapped_column(default="pending")  # pending | sent | failed | dead
+    attempts: Mapped[int] = mapped_column(default=0)
+    last_error: Mapped[str | None]
+    provider_ref: Mapped[str | None]
+    correlation_id: Mapped[str | None]
+    sent_at: Mapped[datetime | None]
+
+
 class DeadLetter(OrgMixin, Base):
     __tablename__ = "dead_letters"
     outbox_message_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("outbox_messages.id"), unique=True)

@@ -18,9 +18,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Protocol
 
-import httpx
-
 from app.core.external_ops import Rejected
+from app.integrations import http as provider_http
 from app.integrations import mockstore
 
 SANDBOX_BASE = "https://api-sandbox.doku.com"
@@ -118,8 +117,10 @@ class LiveDoku:
 
     def get_status(self, invoice_number: str) -> dict | None:
         target = f"/orders/v1/status/{invoice_number}"
-        r = httpx.get(self.base + target, timeout=self.timeout,
-                      headers=self._headers(f"status-{invoice_number}-{datetime.now(UTC):%H%M%S%f}", target, None))
+        r = provider_http.request("GET", self.base + target, breaker_key=f"doku:{self.client_id}", provider="doku",
+                                  timeout=self.timeout,
+                                  headers=self._headers(f"status-{invoice_number}-{datetime.now(UTC):%H%M%S%f}",
+                                                        target, None))
         if r.status_code == 404:
             return None
         r.raise_for_status()

@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     biteship_webhook_token: str = ""
 
     outbox_max_attempts: int = 8
+    # Risk-alert notification channels (comma separated). Only "mock" exists until a live channel is authorised.
+    risk_alert_channels: str = "mock"
+    notify_max_attempts: int = 4
     # Bearer token for /metrics (Prometheus). Empty → endpoint disabled (404).
     metrics_token: str = ""
     # Webhook replay window (seconds) for providers that sign a timestamp (Chatwoot, DOKU).

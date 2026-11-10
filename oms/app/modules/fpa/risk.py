@@ -70,8 +70,74 @@ def stress_and_alert(session: Session, principal: Principal, inputs: simulator.S
     return out
 
 
+RETRY_MINUTES = (1, 5, 15, 60)
+
+
 @handler("notify.risk_alert")
 def _notify(session: Session, msg) -> None:
-    """Delivery channel (n8n/Slack/WhatsApp to the owner) is configured in M5; the case is the system of record."""
-    return None
+    """Deliver a risk alert on every configured channel (remediation E2).
 
+    The exception case is the system of record and is never modified or closed by delivery problems. Each
+    (case, channel) delivery keeps its status, attempts, last error and the request correlation id. A failed send is
+    recorded and retried by a delayed outbox message (the failure is *persisted*, not rolled back with the handler);
+    after ``notify_max_attempts`` the delivery is ``dead``: a dead letter is raised for review, an escalation event is
+    appended to the case and the case is flagged for a human."""
+    import uuid as _uuid
+    from datetime import timedelta
+
+    from sqlalchemy.dialects.postgresql import insert
+
+    from app.core.audit import audit
+    from app.core.config import get_settings
+    from app.core.observability import correlation_id
+    from app.integrations.notify import channel_for
+    from app.models.base import utcnow
+    from app.models.governance import DeadLetter, ExceptionCase, ExceptionEvent, NotificationDelivery
+
+    payload = msg.payload or {}
+    case = session.get(ExceptionCase, _uuid.UUID(payload["case_id"]))
+    if case is None:
+        return
+    settings = get_settings()
+    attempt = int(payload.get("attempt", 1))
+    retry: list[str] = []
+    for name in [c.strip() for c in settings.risk_alert_channels.split(",") if c.strip()]:
+        session.execute(insert(NotificationDelivery).values(
+            id=_uuid.uuid4(), created_at=utcnow(), organization_id=case.organization_id, case_id=case.id,
+            channel=name, recipient_role=case.owner_role or "owner", status="pending", attempts=0)
+            .on_conflict_do_nothing(index_elements=["case_id", "channel"]))
+        d = session.scalars(select(NotificationDelivery).where(
+            NotificationDelivery.case_id == case.id, NotificationDelivery.channel == name).with_for_update()).one()
+        if d.status == "sent":
+            continue
+        d.attempts += 1
+        d.correlation_id = correlation_id.get() or d.correlation_id
+        try:
+            resp = channel_for(name).send({"case_id": str(case.id), "type": payload.get("type"),
+                                           "scenario": payload.get("scenario"), "exposure": payload.get("exposure"),
+                                           "correlation_id": d.correlation_id})
+        except Exception as exc:  # noqa: BLE001 - recorded, retried, dead-lettered; never touches the case
+            d.last_error = f"{type(exc).__name__}: {exc}"[:2000]
+            if d.attempts >= settings.notify_max_attempts:
+                d.status = "dead"
+                if session.scalars(select(DeadLetter).where(DeadLetter.outbox_message_id == msg.id)).first() is None:
+                    session.add(DeadLetter(organization_id=case.organization_id, outbox_message_id=msg.id,
+                                           topic=msg.topic, last_error=d.last_error, attempts=d.attempts))
+                session.add(ExceptionEvent(organization_id=case.organization_id, case_id=case.id,
+                                           portfolio_id=case.portfolio_id, event="notification_failed",
+                                           detail={"channel": name, "attempts": d.attempts,
+                                                   "error": d.last_error[:300], "escalation": "human_follow_up"}))
+                case.context = {**(case.context or {}), "notification_escalated": True}
+            else:
+                d.status = "failed"
+                retry.append(name)
+            audit(session, case.organization_id, "notification.failed", "exception_case", case.id,
+                  actor_type="system", after={"channel": name, "attempts": d.attempts, "status": d.status})
+            continue
+        d.status, d.provider_ref, d.sent_at, d.last_error = "sent", str(resp.get("ref")), utcnow(), None
+        audit(session, case.organization_id, "notification.sent", "exception_case", case.id,
+              actor_type="system", after={"channel": name, "attempts": d.attempts, "provider_ref": d.provider_ref})
+    if retry:
+        delay = timedelta(minutes=RETRY_MINUTES[min(attempt - 1, len(RETRY_MINUTES) - 1)])
+        enqueue(session, case.organization_id, "notify.risk_alert", f"{msg.dedupe_key}:retry{attempt}",
+                {**payload, "attempt": attempt + 1}, delay=delay)

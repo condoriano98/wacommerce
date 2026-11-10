@@ -15,9 +15,8 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Protocol
 
-import httpx
-
 from app.core.external_ops import NotSent, OperationUncertain, Rejected  # noqa: F401  (re-exported for callers)
+from app.integrations import http as provider_http
 from app.integrations import mockstore
 
 BASE = "https://api.biteship.com"
@@ -94,7 +93,8 @@ class LiveBiteship:
                 "cod_amount": str(req.cod_amount), "status": data.get("status")}
 
     def get_order(self, order_id: str) -> dict | None:
-        r = httpx.get(f"{self.base}/v1/orders/{order_id}", headers=self.h, timeout=self.timeout)
+        r = provider_http.request("GET", f"{self.base}/v1/orders/{order_id}", breaker_key="biteship",
+                                  provider="biteship", headers=self.h, timeout=self.timeout)
         if r.status_code == 404:
             return None
         r.raise_for_status()

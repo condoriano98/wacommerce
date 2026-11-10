@@ -8,10 +8,9 @@ the OMS never re-sends an event whose delivery is uncertain (ADR-015). Identifie
 
 from typing import Protocol
 
-import httpx
-
 from app.core.config import get_settings
-from app.core.external_ops import NotSent, Rejected
+from app.core.external_ops import Rejected
+from app.integrations import http as provider_http
 from app.integrations import mockstore
 
 
@@ -38,11 +37,9 @@ class LiveMetaCapi:
         self.token, self.version = access_token, api_version or get_settings().meta_graph_version
 
     def send_event(self, dataset_id: str, event: dict) -> dict:
-        try:
-            r = httpx.post(f"https://graph.facebook.com/{self.version}/{dataset_id}/events", timeout=20,
-                           json={"data": [event]}, headers={"Authorization": f"Bearer {self.token}"})
-        except httpx.ConnectError as exc:
-            raise NotSent(str(exc)) from exc
+        r = provider_http.request("POST", f"https://graph.facebook.com/{self.version}/{dataset_id}/events",
+                                  breaker_key=f"meta_capi:{dataset_id}", provider="meta_capi", timeout=20,
+                                  json={"data": [event]}, headers={"Authorization": f"Bearer {self.token}"})
         if 400 <= r.status_code < 500:
             raise Rejected(f"{r.status_code} {r.text[:300]}")
         r.raise_for_status()

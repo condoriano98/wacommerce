@@ -459,3 +459,96 @@ def test_D2_long_downside_keeps_inventory_cash_and_contribution_consistent():
     assert sum(D(p["cost"]) for p in s6["inventory_purchases"]) < sum(D(p["cost"]) for p in base["inventory_purchases"])
     assert D(s6["cm2"]) < D(base["cm2"])
     assert simulator.run(seed) == simulator.run(seed)  # still deterministic
+
+
+# --- E2 risk-alert notifications ---------------------------------------------------------------------------------
+
+
+def _breach(t) -> uuid.UUID:
+    from app.models.org import RiskPolicy
+    from app.modules.fpa import risk, simulator
+
+    with owner_session() as s:
+        s.scalars(select(RiskPolicy).where(RiskPolicy.organization_id == t.org_id,
+                                           RiskPolicy.key == "min_cash_reserve",
+                                           RiskPolicy.portfolio_id.is_(None))).one().threshold = D("90000000")
+    owner = principal(t, "owner")
+    with tenant_session(t.org_id, owner.user_id) as s:
+        res = risk.stress_and_alert(s, owner, simulator.rp100m_seed(), ["S4_cod_delay_+14d"])
+    with owner_session() as s:
+        return s.execute(text("select id from exception_cases where organization_id = :o and type = "
+                              "'liquidity_breach'"), {"o": t.org_id}).scalar() if res else None
+
+
+def _drain_notifications(hours: int = 0) -> None:
+    for _ in range(5):
+        if not dispatch_due(now=utcnow() + timedelta(hours=hours)):
+            break
+
+
+def _delivery(case_id):
+    with owner_session() as s:
+        return s.execute(text("select status, attempts, last_error, correlation_id from notification_deliveries "
+                              "where case_id = :c"), {"c": case_id}).one()
+
+
+def _case(case_id):
+    with owner_session() as s:
+        return s.execute(text("select status, exposure, context from exception_cases where id = :c"),
+                         {"c": case_id}).one()
+
+
+def test_E2_risk_alert_is_delivered_once_with_correlation_and_audit(tenant):
+    from app.integrations import mockstore
+    from app.integrations.notify import MockNotifier
+
+    mockstore.reset("notify")
+    case_id = _breach(tenant)
+    _drain_notifications()
+    d = _delivery(case_id)
+    assert (d.status, d.attempts) == ("sent", 1)
+    assert [m["case_id"] for m in MockNotifier.sent()].count(str(case_id)) == 1
+    _drain_notifications(hours=2)  # re-dispatch: nothing is sent twice
+    assert [m["case_id"] for m in MockNotifier.sent()].count(str(case_id)) == 1
+    with owner_session() as s:
+        assert s.execute(text("select count(*) from audit_logs where action = 'notification.sent' and "
+                              "entity_id = :c"), {"c": str(case_id)}).scalar() == 1
+
+
+def test_E2_failed_notifications_are_retried_and_recover_without_touching_the_case(tenant):
+    from app.integrations import mockstore
+    from app.integrations.notify import MockNotifier
+
+    mockstore.reset("notify")
+    MockNotifier.fail_next(2)
+    case_id = _breach(tenant)
+    before = _case(case_id)
+    _drain_notifications()
+    assert _delivery(case_id).status == "failed"
+    _drain_notifications(hours=1)
+    _drain_notifications(hours=2)
+    d = _delivery(case_id)
+    assert (d.status, d.attempts, d.last_error) == ("sent", 3, None)
+    after = _case(case_id)
+    assert (after.status, after.exposure) == (before.status, before.exposure)
+
+
+def test_E2_persistent_failure_dead_letters_and_escalates_but_the_case_stays_open(tenant):
+    from app.integrations import mockstore
+    from app.integrations.notify import MockNotifier
+
+    mockstore.reset("notify")
+    MockNotifier.fail_next(100)
+    case_id = _breach(tenant)
+    for h in (0, 1, 2, 3, 4, 5):
+        _drain_notifications(hours=h)
+    d = _delivery(case_id)
+    assert d.status == "dead" and d.attempts == 4 and "unavailable" in d.last_error
+    c = _case(case_id)
+    assert c.status not in ("resolved", "written_off") and c.context.get("notification_escalated") is True
+    with owner_session() as s:
+        assert s.execute(text("select count(*) from dead_letters where organization_id = :o and "
+                              "topic = 'notify.risk_alert'"), {"o": tenant.org_id}).scalar() == 1
+        assert s.execute(text("select count(*) from exception_events where case_id = :c and "
+                              "event = 'notification_failed'"), {"c": case_id}).scalar() == 1
+    mockstore.reset("notify")

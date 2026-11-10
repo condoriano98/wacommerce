@@ -14,9 +14,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Protocol
 
-import httpx
-
-from app.core.external_ops import NotSent, Rejected
+from app.core.external_ops import Rejected
+from app.integrations import http as provider_http
 from app.integrations import mockstore
 
 MAX_WINDOW = {"shopee": timedelta(days=15), "tiktokshop": timedelta(days=30), "lazada": timedelta(days=30)}
@@ -200,10 +199,8 @@ class LiveShopee:
         ts = int(datetime.now(UTC).timestamp())
         q = {"partner_id": self.pid, "timestamp": ts, "access_token": self.token, "shop_id": self.shop,
              "sign": shopee_sign(self.key, self.pid, path, ts, self.token, self.shop), **params}
-        try:
-            r = httpx.get(self.BASE + path, params=q, timeout=self.timeout)
-        except httpx.ConnectError as exc:
-            raise NotSent(str(exc)) from exc
+        r = provider_http.request("GET", self.BASE + path, breaker_key=f"shopee:{self.shop}", provider="shopee",
+                                  params=q, timeout=self.timeout)  # connect failures raise NotSent
         if r.status_code == 429:
             raise TimeoutError("rate limited")  # caller backs off
         r.raise_for_status()

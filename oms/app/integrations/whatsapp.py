@@ -9,9 +9,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Protocol
 
-import httpx
-
 from app.core.config import get_settings
+from app.integrations import http as provider_http
 
 
 @dataclass
@@ -118,8 +117,9 @@ class LiveWhatsAppSender:
         self.version = api_version or get_settings().meta_graph_version
 
     def _post(self, phone_number_id: str, body: dict) -> str:
-        r = httpx.post(f"https://graph.facebook.com/{self.version}/{phone_number_id}/messages", json=body,
-                       headers={"Authorization": f"Bearer {self.token}"}, timeout=20)
+        r = provider_http.request("POST", f"https://graph.facebook.com/{self.version}/{phone_number_id}/messages",
+                                  breaker_key=f"whatsapp:{phone_number_id}", provider="whatsapp", json=body,
+                                  headers={"Authorization": f"Bearer {self.token}"}, timeout=20)
         r.raise_for_status()
         return r.json()["messages"][0]["id"]
 

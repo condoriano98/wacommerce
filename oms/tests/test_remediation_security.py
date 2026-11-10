@@ -240,3 +240,66 @@ def test_C3_ambiguous_shipment_reference_resolves_to_no_tenant(tenant):
 
     with webhook_session() as s:
         assert s.execute(text("select organization_id from resolve_shipment(:r)"), {"r": ref}).scalar() is None
+
+
+# --- E3 provider reliability and webhook hygiene ----------------------------------------------------------------
+
+
+def test_E3_no_live_adapter_calls_httpx_directly():
+    """Every live provider call must go through integrations/http.request (timeouts + circuit breaker)."""
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).parents[1] / "app" / "integrations"
+    offenders = []
+    for f in sorted(root.glob("*.py")):
+        if f.name == "http.py":
+            continue
+        for node in ast.walk(ast.parse(f.read_text())):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and \
+                    isinstance(node.func.value, ast.Name) and node.func.value.id == "httpx" and \
+                    node.func.attr in ("get", "post", "put", "patch", "delete", "request", "stream"):
+                offenders.append(f"{f.name}:{node.lineno} httpx.{node.func.attr}")
+    assert offenders == [], offenders
+
+
+def test_E3_status_lookup_trips_the_circuit_breaker_and_then_fails_fast():
+    import httpx
+    import respx
+
+    from app.core.external_ops import NotSent
+    from app.integrations import http as provider_http
+    from app.integrations.doku import LiveDoku
+
+    provider_http._BREAKERS.clear()
+    client = LiveDoku("MCH-E3", "secret", base_url="https://doku.test")
+    with respx.mock(assert_all_called=False) as router:
+        route = router.get(url__regex=r"https://doku\.test/orders/v1/status/.*").mock(
+            return_value=httpx.Response(503))
+        for _ in range(5):
+            with pytest.raises(httpx.HTTPStatusError):
+                client.get_status("INV-E3")
+        calls = route.call_count
+        with pytest.raises(NotSent):  # open circuit: provably not sent
+            client.get_status("INV-E3")
+        assert route.call_count == calls
+    provider_http._BREAKERS.clear()
+
+
+def test_E3_biteship_shared_token_never_appears_in_logs(client, caplog):
+    import logging
+
+    from app.core.config import get_settings
+
+    caplog.set_level(logging.DEBUG)
+    token = get_settings().biteship_webhook_token
+    client.post(f"/webhooks/biteship?token={token}", content=b'{"event":"order.status","order_id":"x","status":"x"}')
+    client.post("/webhooks/biteship?token=wrong-guess", content=b"{}")
+    # Server-side records only (the test client's own httpx logger echoes the URL it was given).
+    server = "\n".join(r.getMessage() + str(getattr(r, "fields", "")) for r in caplog.records if r.name != "httpx")
+    assert token not in server and "wrong-guess" not in server
+    # Production: our access log carries the route template only; uvicorn's access log (which prints query strings,
+    # i.e. the shared token) is disabled in the image.
+    from pathlib import Path
+
+    assert "--no-access-log" in (Path(__file__).parents[1] / "Dockerfile").read_text()
