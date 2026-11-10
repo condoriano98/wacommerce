@@ -115,6 +115,7 @@ operations}.py` (dead letters, uncertain operations, procurement copilot), n8n `
 - Webhook secrets for DOKU/Chatwoot come from settings; per-account secrets need a webhook-readable definer (M5).
 
 ## Milestone log
+**M2 closed 2026-11-10**: local and CI green on `65224c0`; all providers mocked, n8n not externally verified.
 **M1 closed 2026-11-10**: local and CI green on `3057cd1`. External verification: none (all providers mocked or absent).
 
 | Milestone | Commit | CI | Local tests (pass/fail/skip) | Functional | External verification |
@@ -122,4 +123,4 @@ operations}.py` (dead letters, uncertain operations, procurement copilot), n8n `
 | M0 | `103608a` | ✅ PR run 3 | 56/0/0 (`cd oms && uv run pytest -q`) | spec consolidated, fixtures, inventory, impact assessment | provider gates open |
 | M1 core | `73947dd` | ✅ push run 6, PR run 7 (`c0f085a` WIP failed, superseded) | 80/0/0 | services, migrations 0004–0007, acceptance #1–4, 7–9, 11a, 13a, 16, 17, 19, 20 | none (all providers mocked/absent) |
 | M1 worker | `3057cd1` | ✅ push run 8 (42749665055), PR run 9 (42749670705) | 84/0/0 (`cd oms && uv run pytest`, PostgreSQL 16.x local) | Procrastinate executor (0008, `app/worker.py`) | G-PROC verified locally |
-| M2 | `9d2473e` (slices `09c9d33`, `f634227`, `9692cc6`) | _pending_ | 117/0/0 (`cd oms && uv run pytest`) | WhatsApp vertical slice, #5, #6, #14, #15, E2E | none — all providers mocked; n8n not verified |
+| M2 | `9d2473e` (slices `09c9d33`, `f634227`, `9692cc6`) | ✅ push run 17 (42753626706), PR run 18 (42753632856); slices ✅ runs 11, 13, 15 | 117/0/0 (`cd oms && uv run pytest`) | WhatsApp vertical slice, #5, #6, #14, #15, E2E | none — all providers mocked; n8n not verified |
