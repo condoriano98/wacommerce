@@ -5,6 +5,7 @@ from app.models import (  # noqa: F401
     catalog,
     customers,
     finance,
+    fpa,
     fulfillment,
     governance,
     inventory,

@@ -72,13 +72,17 @@ class CampaignPortfolioAllocation(OrgMixin, Base):
 
     __tablename__ = "campaign_portfolio_allocations"
     __table_args__ = (
-        UniqueConstraint("campaign_id", "portfolio_id"),
+        UniqueConstraint("campaign_id", "portfolio_id", "effective_from", name="uq_cpa_campaign_portfolio_from"),
         CheckConstraint("share > 0 and share <= 1"),
+        CheckConstraint("effective_to is null or effective_to > effective_from", name="ck_cpa_effective_range"),
     )
     campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("ad_campaigns.id"), index=True)
     portfolio_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portfolios.id"), index=True)
     method: Mapped[str]  # direct | fixed_share
     share: Mapped[Decimal] = mapped_column(Numeric(7, 4))
+    effective_from: Mapped[date] = mapped_column(default=date(2000, 1, 1))  # spec §15: effective-dated (#12)
+    effective_to: Mapped[date | None]
+    policy_version: Mapped[int] = mapped_column(default=1)
 
 
 class ConversionOutbox(OrgMixin, Base):
