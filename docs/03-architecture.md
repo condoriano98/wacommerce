@@ -37,7 +37,12 @@ flowchart TB
 | Metabase | Analytics on read-only views | — |
 | Dashboard (Next.js + Refine) | Operations + approvals UI | — |
 
-## WhatsApp / Chatwoot / n8n topology (verified against Chatwoot v4.19.1 source)
+## WhatsApp / Chatwoot / n8n topology
+
+> **Superseded by `06-design-revisions.md` R1.** The OMS is now the single WhatsApp gateway and Chatwoot uses an API-channel
+> inbox, so nothing competes for Meta's callback. The original proxy design is kept below for the record only.
+
+### (Superseded) proxy design — verified against Chatwoot v4.19.1 source
 
 ```mermaid
 sequenceDiagram
