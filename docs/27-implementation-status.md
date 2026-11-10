@@ -114,6 +114,35 @@ operations}.py` (dead letters, uncertain operations, procurement copilot), n8n `
 - Procurement copilot dashboard pages — with the M3 dashboard. OMS n8n error-intake endpoint — M5 observability.
 - Webhook secrets for DOKU/Chatwoot come from settings; per-account secrets need a webhook-readable definer (M5).
 
+## M3 — FP&A and capital intelligence
+
+### Acceptance-test ownership → evidence
+| # | Test |
+|---|---|
+| 12 | `test_m3_fpa_core.py::test_12_allocation_change_is_effective_dated_and_13b_snapshots_survive_later_changes` — new allocation version from today; change inside a closed period refused; closed-day re-pull booked in the open period with `event_time` = original day; closed-period ledger line count unchanged |
+| 13b | same test — close snapshot byte-identical after later activity/allocation change/re-pull; UPDATE/DELETE on `fpa_snapshots` rejected even for the schema owner; restatement = version 2; portfolio users see only their snapshot |
+| 18 | `test_m3_simulator.py::test_18_stress_breaching_reserve_opens_case_and_notifies` — breach → `liquidity_breach` case with exposure + `notify.risk_alert` outbox; no breach → nothing |
+| S1–S9 | `test_m3_simulator.py` — hand-computed base, S1 and S9; each scenario moves the expected metric; delays move cash not contribution; S9 only affects the marketplace portfolio; determinism; ledger-actuals override; Monte Carlo refused |
+| Waterfall | `test_m3_fpa_core.py::test_waterfall_ties_to_ledger_*` — operating profit = ledger P&L; every P&L account mapped once; L2 + unallocated = L3; RLS portfolio view |
+| API/UI | `test_m3_api.py` (FP&A API, read endpoints with RLS, reporting login on `reporting.monthly_waterfall`); `dashboard/tests/smoke.spec.ts` (5 Playwright tests, OMS API mocked) |
+
+### Built
+Migrations `0012` (cost_level_map, effective-dated allocations, append-only `fpa_snapshots`, `simulation_runs`) and `0013`
+(`reporting.monthly_waterfall`). Modules `fpa/{waterfall,snapshots,simulator,risk,cash}.py`, `marketing.py`; APIs
+`api/fpa.py`, `api/reads.py`; dashboard `dashboard/` (Next.js 16 + Refine 5 + Tailwind/shadcn-style components, 10 pages,
+reads the OMS API only) with its own CI workflow `dashboard-ci.yml`.
+
+### Process defects (own mistakes, fixed)
+- `d0658a7` and `76ff6c5` were pushed with a failing test / lint error because command output was piped through `tail`,
+  masking the exit status. Fixed in `d367e84` and `55a9a29`; commits now go through a gate script whose exit code is
+  checked unpiped.
+
+### Not done / open
+- Metabase instance itself not deployed or verified (G-MB1: PostgreSQL side verified).
+- Dashboard has no live-auth E2E against a running OMS (API mocked in Playwright); write actions in the UI are limited
+  to sign-in and running simulations.
+- Simulator inputs are illustrative; calibration from ledger actuals beyond elapsed-week override is not automated.
+
 ## Milestone log
 **M2 closed 2026-11-10**: local and CI green on `65224c0`; all providers mocked, n8n not externally verified.
 **M1 closed 2026-11-10**: local and CI green on `3057cd1`. External verification: none (all providers mocked or absent).

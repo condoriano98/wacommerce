@@ -79,3 +79,24 @@ def test_reporting_login_reads_waterfall_view_for_its_org_only(tenant):
                          "group by 1, 2").fetchall()
         assert rows and {r[0] for r in rows} == {tenant.org_id}
         assert any(r[1] == "gross_sales" and r[2] > 0 for r in rows)
+
+
+def test_dashboard_read_endpoints_respect_rls(tenant, client):
+    w = build_world(tenant)
+    oid = _order(tenant, w, [("A1", 1, "0"), ("B1", 1, "0")])
+    _pay_gateway(tenant, oid)
+    dispatch_due()
+    owner = client.get("/orders", headers=tenant.headers("owner")).json()
+    mine = next(o for o in owner if o["order_id"] == str(oid))
+    assert mine["lines"] == 2
+    pm_a = next(o for o in client.get("/orders", headers=tenant.headers("pm_a")).json() if o["order_id"] == str(oid))
+    assert pm_a["lines"] == 1  # slice: only portfolio A's line, no header totals
+    assert client.get("/exceptions", headers=tenant.headers("owner")).status_code == 200
+    caps = client.get("/integrations/capabilities", headers=tenant.headers("owner")).json()
+    assert caps and not any(c["operationally_ready"] for c in caps)  # nothing is production-verified
+    r = client.put(f"/portfolios/{tenant.portfolios['A']}/mandates", headers=tenant.headers("owner"), json={
+        "category": "advertising", "amount": "27000000", "effective_from": "2026-11-01", "reason": "plan"})
+    assert r.status_code == 200, r.text
+    cap = {c["code"]: c for c in client.get("/capital/summary", headers=tenant.headers("owner")).json()}
+    assert cap["A"]["categories"]["advertising"]["mandate"].startswith("27000000")
+    assert set(c["code"] for c in client.get("/capital/summary", headers=tenant.headers("pm_b")).json()) == {"B"}

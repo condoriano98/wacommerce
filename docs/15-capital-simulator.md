@@ -52,5 +52,8 @@ reserve under the combined downside; downside loss (unsold stock at salvage) is 
 A low supplier price alone is never enough.
 
 ## Status
-**Planned** (M3). The simulator is deterministic and reconciles its base case to ledger actuals for elapsed periods. Monte
-Carlo is Planned behind a flag (ADR-017).
+**Implemented & tested (M3, 2026-11-10)** — `oms/app/modules/fpa/simulator.py` (engine `sim-1.0`): deterministic weekly
+Decimal engine; elapsed weeks can be replaced by ledger actuals; S1–S9 and the combined-downside preset as pure input
+transforms; Rp100M A/B/C seed (illustrative planning inputs, not actuals); runs persisted in `simulation_runs`; reserve
+and margin breaches open `liquidity_breach` / `margin_breach` cases with exposure (`fpa/risk.py`). Bulk-buy evaluator in
+`fpa/cash.py`. Monte Carlo remains **Planned** and raises while `MONTE_CARLO_ENABLED` is false (ADR-017).

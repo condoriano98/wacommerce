@@ -136,7 +136,7 @@ class DecisionIn(BaseModel):
 def list_approvals(session: DbSession, principal: CurrentPrincipal, status_filter: str = "pending") -> list[dict]:
     rows = session.scalars(select(HumanApproval).where(HumanApproval.status == status_filter)
                            .order_by(HumanApproval.created_at)).all()
-    return [{"id": str(a.id), "kind": a.kind, "subject": f"{a.subject_type}:{a.subject_id}",
+    return [{"id": str(a.id), "kind": a.kind, "status": a.status, "subject": f"{a.subject_type}:{a.subject_id}",
              "amount": str(a.amount) if a.amount is not None else None, "payload": a.payload,
              "requested_by": str(a.requested_by), "portfolio_id": str(a.portfolio_id) if a.portfolio_id else None}
             for a in rows]
