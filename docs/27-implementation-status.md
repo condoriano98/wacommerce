@@ -202,6 +202,8 @@ user. CSV imports are the supported path until access exists.
 
 ## Milestone log
 **M3 closed 2026-11-10**: local and CI green (both workflows) on `24a559f`/`26e3d68`; no external systems involved.
+**M5 implementation closed 2026-11-10**: local and CI green on `434ab5d` (OMS, Security, Dashboard). This closes the implementation scope only — the release decision stays **NO-GO** (`docs/25`) until the external and governance gates close (G-DOKU, G-BS1–3, G-CW1, marketplace/ads access, G-ACC1/G-TAX1, G-GOV1, G-OPS1/2, G-ADS1, G-MB1 instance) and a human signs off.
+**M4 closed 2026-11-10**: review findings (P0 in-file CSV duplicates, P1 access state, P1 token-rotation crash, P1 ad-spend boundaries) fixed in `454cf38`, CI green (push 37 / PR 38). All marketplace/ads providers mocked.
 **M2 closed 2026-11-10**: local and CI green on `65224c0`; all providers mocked, n8n not externally verified.
 **M1 closed 2026-11-10**: local and CI green on `3057cd1`. External verification: none (all providers mocked or absent).
 
@@ -212,5 +214,5 @@ user. CSV imports are the supported path until access exists.
 | M1 worker | `3057cd1` | ✅ push run 8 (42749665055), PR run 9 (42749670705) | 84/0/0 (`cd oms && uv run pytest`, PostgreSQL 16.x local) | Procrastinate executor (0008, `app/worker.py`) | G-PROC verified locally |
 | M2 | `9d2473e` (slices `09c9d33`, `f634227`, `9692cc6`) | ✅ push run 17 (42753626706), PR run 18 (42753632856); slices ✅ runs 11, 13, 15 | 117/0/0 (`cd oms && uv run pytest`) | WhatsApp vertical slice, #5, #6, #14, #15, E2E | none — all providers mocked; n8n not verified |
 | M3 | `24a559f` (slices `d0658a7`→fix `d367e84`, `76ff6c5`→fix `55a9a29`, `ef4792e`) | ✅ OMS push 30 / PR 31, Dashboard push 1 / PR 2 (`24a559f`); PR runs OMS 32 + Dashboard 3 (`26e3d68`) | 130/0/0 OMS (`cd oms && uv run pytest`); dashboard build + 5/0/0 Playwright | waterfall + tie-out, #12, #13b, S1–S9 + #18, cash forecast, bulk-buy, FP&A API, dashboard | none — no external systems involved; Metabase instance unverified |
-| M4 | `9d45743` + review fixes (this commit) | ✅ `9d45743` push 34 / PR 35, `b1a2735` PR 36; review fixes _pending_ | 151/0/0 | adapters (mock), channel sync, CSV imports, #10, #11b, review P0/P1 fixed | none — all marketplace/ads access blocked; G-ADS1 open |
-| M5 | `1fd96d6`, `a10cb8e`, this commit | _pending_ | 171/0/0 (`cd oms && uv run pytest`) | hardening tests 1–9 automated or evidenced; deploy configs; release checklist | DR drill preliminary; gitleaks pending CI; no deployment; release **NO-GO** |
+| M4 | `9d45743` + review fixes `454cf38` | ✅ `9d45743` push 34 / PR 35, `b1a2735` PR 36; review fixes `454cf38` push 37 / PR 38 | 151/0/0 | adapters (mock), channel sync, CSV imports, #10, #11b, review P0/P1 fixed | none — all marketplace/ads access blocked; G-ADS1 open |
+| M5 | `1fd96d6`, `a10cb8e`, `ae17bd1`, CI fix `434ab5d` | ✅ `1fd96d6` push 39 / PR 40; `a10cb8e`/`ae17bd1` ❌ OMS runs 41–44 (CI installed a hand-written tool list without `hypothesis`; code unaffected) → fixed by `434ab5d`: OMS push 45 / PR 46, Security push 5 / PR 6 (gitleaks full history clean, pip-audit and npm audit clean), Dashboard PR 12 | 171/0/0 (`cd oms && uv run pytest`) | hardening tests 1–9 automated or evidenced; deploy configs; release checklist | DR drill preliminary (local only; G-OPS1 open); no deployment; release **NO-GO** |
