@@ -50,6 +50,14 @@ def match(session: Session, kind: str, ref: str, *, actual_ref: str, actual_amou
     item.operator_user_id = operator_user_id
     if abs(item.difference) <= TOLERANCE:
         item.status, item.resolved_at = "matched", utcnow()
+        if item.exception_case_id is not None:  # aged item settled late: close its case with the evidence
+            from app.models.governance import ExceptionCase
+            from app.modules import exceptions
+
+            case = session.get(ExceptionCase, item.exception_case_id)
+            if case is not None and case.status not in ("resolved", "written_off"):
+                exceptions.resolve(session, case, actor_user_id=operator_user_id,
+                                   note=f"settled late: {actual_ref}")
     else:
         item.status, item.classification = "variance", "fee_variance" if item.difference < 0 else "unknown"
         _case(session, item, exposure=abs(item.difference))

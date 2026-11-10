@@ -1,0 +1,3 @@
+{"id": "576461413038785752", "status": "AWAITING_SHIPMENT", "update_time": 1793000100,
+ "payment": {"total_amount": "135000", "shipping_fee": "15000"},
+ "line_items": [{"seller_sku": "TT-C1", "sale_price": "60000"}, {"seller_sku": "TT-C1", "sale_price": "60000"}]}

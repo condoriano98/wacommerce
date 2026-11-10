@@ -91,6 +91,31 @@ async def retry_stalled_jobs(context, timestamp: int) -> int:
     return await recover_stalled(context.app)
 
 
+def _channels(kind: str) -> dict:
+    import app.registry  # noqa: F401
+    from app.modules import channel_sync
+
+    return channel_sync.run_scheduled(kind)
+
+
+@procrastinate_app.periodic(cron="*/15 * * * *", periodic_id="channels-orders")
+@procrastinate_app.task(name="channels.orders", queue="maintenance", queueing_lock="channels.orders")
+def sync_channel_orders(timestamp: int) -> dict:
+    return _channels("orders")
+
+
+@procrastinate_app.periodic(cron="7 */6 * * *", periodic_id="channels-payouts")
+@procrastinate_app.task(name="channels.payouts", queue="maintenance", queueing_lock="channels.payouts")
+def sync_channel_payouts(timestamp: int) -> dict:
+    return _channels("payouts")
+
+
+@procrastinate_app.periodic(cron="17 3 * * *", periodic_id="channels-insights")
+@procrastinate_app.task(name="channels.insights", queue="maintenance", queueing_lock="channels.insights")
+def sync_ads_insights(timestamp: int) -> dict:
+    return _channels("insights")
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
     procrastinate_app.run_worker(queues=QUEUES, update_heartbeat_interval=10.0,

@@ -1,0 +1,4 @@
+[{"order_no": 382910443, "transaction_type": "Item Price Credit", "amount": "90000"},
+ {"order_no": 382910443, "transaction_type": "Commission", "amount": "-4500"},
+ {"order_no": 382910443, "transaction_type": "Payment Fee", "amount": "-1800"},
+ {"order_no": 382910443, "transaction_type": "Withholding Tax", "amount": "-450"}]
