@@ -28,6 +28,12 @@ re-verify at Milestone 0, dates recorded per row):
 | Shopee/Tokopedia buyer side | No buyer API; ToS prohibit bots | unsupported (by design) | human copilot only |
 | n8n instance MCP | Settings → Instance-level MCP; currently disabled on Sumopod | not_authorized | owner enables; build-time only, not runtime |
 
+Adapter implementation status (M2, 2026-11-10): DOKU Checkout, Biteship orders, WhatsApp Cloud API send, Chatwoot
+API channel and Meta BM CAPI have **mock implementations exercised by tests** plus documentation-derived live clients
+covered only by offline respx contract tests (`oms/tests/test_m2_adapters.py`). None is sandbox- or
+production-verified; every registry row stays `mocked` and no live client is selected without `live_enabled` +
+credentials (none exist).
+
 CSV fallback (all sales/ads/settlement/bank imports): schema-validated import batches, provenance (file hash, uploader,
 source), row fingerprints for duplicate prevention, dry-run preview, reconciliation against existing records.
 

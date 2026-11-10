@@ -276,6 +276,7 @@ def booking_job(session: Session, msg: OutboxMessage) -> None:
     g = session.get(FulfillmentGroup, uuid.UUID(msg.payload["group_id"]), with_for_update=True)
     if g is None or session.scalars(select(Shipment).where(Shipment.group_id == g.id)).first():
         return
+    g.status = "booking"
     order = session.get(Order, g.order_id)
     cod = group_cod_amount(session, g)
     gis = session.scalars(select(FulfillmentGroupItem).where(FulfillmentGroupItem.group_id == g.id)).all()

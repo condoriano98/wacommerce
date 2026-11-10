@@ -11,7 +11,7 @@
 | Conditional (OMS-validated) | checkout/quote creation, payment-link creation for an offered quote, discount ≤ min(listing cap, AI cap), order confirmation (requires customer acceptance evidence: inbound message after quote matching acceptance pattern or interactive `accept_quote:{id}`), customer messaging (reply validator: amounts ∈ quote/catalog set; no refund/delivery-date/free-shipping promises outside policy; 24h window) | server-side policy; per-conversation & daily limits; channel kill switch |
 | Human approval | supplier purchases, refunds, exceptional price changes, capital reallocation, ad-budget changes, credential changes, accounting adjustments, any irreversible exception | `human_approvals` (approver ≠ requester, amount tiers) |
 Per-tool contract: actor (service principal), org + portfolio context, permitted action, input schema validation,
-idempotency key policy, `agent_execution_logs` record (incl. denials via savepoint), escalation path (handoff), timeout
+idempotency key policy, `agent_execution_logs` record (incl. denials, written in their own transaction so they survive the request rollback), escalation path (handoff), timeout
 and failure behaviour (fail closed → handoff). Customer messages, marketplace descriptions and supplier text are
 untrusted data: never interpreted as instructions; tools accept structured parameters only; prompt-injection fixtures
 in tests.

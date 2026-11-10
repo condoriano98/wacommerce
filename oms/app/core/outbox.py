@@ -69,10 +69,17 @@ def process_one(session: Session, msg: OutboxMessage) -> None:
         msg.last_error = str(exc)[:2000]
         if msg.attempts >= get_settings().outbox_max_attempts:
             msg.status = "dead"
+            from sqlalchemy import select
+
             from app.models.governance import DeadLetter
 
-            session.add(DeadLetter(organization_id=msg.organization_id, outbox_message_id=msg.id, topic=msg.topic,
-                                   last_error=msg.last_error, attempts=msg.attempts))
+            dl = session.scalars(select(DeadLetter).where(DeadLetter.outbox_message_id == msg.id)).first()
+            if dl is None:  # a requeued message that dies again re-opens its existing dead letter
+                session.add(DeadLetter(organization_id=msg.organization_id, outbox_message_id=msg.id,
+                                       topic=msg.topic, last_error=msg.last_error, attempts=msg.attempts))
+            else:
+                dl.last_error, dl.attempts = msg.last_error, msg.attempts
+                dl.reviewed_by = dl.resolution = dl.resolved_at = None
         else:
             msg.next_attempt_at = utcnow() + _backoff(msg.attempts)
 

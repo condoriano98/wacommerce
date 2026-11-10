@@ -83,6 +83,37 @@ belongs to a later release, after both role modes have run in staging (ADR-014).
 - No dead-letter review HTTP endpoint yet (`requeue_dead_letter` service exists). The endpoint and metrics are planned for M2/M5.
 - `OMS_DB_ROLE_MODE=legacy` path kept for cutover. CI runs `v31` only.
 
+## M2 — WhatsApp commerce vertical slice (all providers mocked)
+
+### Acceptance-test ownership → evidence
+| # | Test |
+|---|---|
+| 5 | `test_m2_whatsapp.py::test_5_*` (Meta duplicates, re-deliveries, out-of-order statuses, replay); `test_m2_e2e.py` (DOKU duplicate + stale FAILED, Biteship duplicated/out-of-order callbacks with provider re-fetch) |
+| 6 | `test_m2_reliability.py` — real worker **process** SIGKILLed after the mock provider accepted: DOKU completes once via status lookup; Biteship ends `uncertain` + `external_uncertain` case, never re-booked; timeout-after-accept variants; human resolution via API (`test_m2_ops_api.py`) |
+| 14 | `test_m2_agent.py` — compromised-LLM simulation: discount above cap, injected fields, human-only tools, unknown tools, unquoted amounts, refund/free-shipping/date promises, fake acceptance evidence, kill switch, handoff; every denial persisted |
+| 15 | `test_m2_whatsapp.py::test_15_*` — Chatwoot echo (`source_id` `oms:*`) dropped, human reply sent exactly once, re-delivery deduplicated, private notes ignored |
+| E2E | `test_m2_e2e.py` — WhatsApp → AI quote → acceptance → DOKU capture → mixed groups (owned + dropship) → Biteship booking → delivery → disbursement → ledger; full re-delivery of every webhook changes nothing (sends, payment pages, bookings, journals) |
+| Other | `test_m2_capi.py` (eligibility, hashed identifiers, no resend), `test_m2_adapters.py` (offline contract), `test_m2_regressions.py`, `test_n8n_workflows.py` (static) |
+
+### Built
+Migrations `0009` (external operation response), `0010` (wa_events, message_mappings, message_templates, media_objects;
+RLS + composite FKs), `0011` (`agent_usage` definer). `core/external_ops.py` (ADR-015 policies, human resolution +
+job resume), adapters `integrations/{doku,biteship,meta_capi,mockstore}.py`, `modules/{agent,provider_webhooks}.py`,
+messaging rework (persist-then-ack, replay, mappings, templates/window, echo suppression), APIs `api/{webhooks,agent,
+operations}.py` (dead letters, uncertain operations, procurement copilot), n8n `n8n/workflows/*.json` (static-checked,
+**not externally verified**).
+
+### Defects found and fixed during M2
+- SQLAlchemy 2.1 reports `rowcount = -1` for ORM `INSERT … ON CONFLICT DO NOTHING`: dedupe results were wrong since M1
+  (state guards masked it for shipment events and gateway notifications; bank import counts were wrong; CAPI events
+  were never queued). All four sites now use `RETURNING`; regression tests added.
+- A requeued outbox message that died again violated `dead_letters` uniqueness; the existing dead letter is re-opened.
+
+### Not done / open
+- Media download/upload adapter and object storage (table `media_objects` exists; no adapter yet) — moved to M5 hardening.
+- Procurement copilot dashboard pages — with the M3 dashboard. OMS n8n error-intake endpoint — M5 observability.
+- Webhook secrets for DOKU/Chatwoot come from settings; per-account secrets need a webhook-readable definer (M5).
+
 ## Milestone log
 **M1 closed 2026-11-10**: local and CI green on `3057cd1`. External verification: none (all providers mocked or absent).
 

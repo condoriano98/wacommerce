@@ -169,4 +169,18 @@ def resolve_uncertain(session, principal, op_id: uuid.UUID, *, effect_exists: bo
         op.status = "prepared"
     audit(session, principal.org_id, "external_operation.resolved", "external_operation", op.id,
           actor_user_id=principal.user_id, after={"effect_exists": effect_exists, "provider_ref": provider_ref})
+    resume = RESUME.get((op.provider, op.operation))
+    if resume and op.subject_id:  # re-run the waiting job: it now finds a confirmed op (or may call again)
+        from app.core.outbox import enqueue
+
+        topic, payload = resume(op.subject_id)
+        enqueue(session, op.organization_id, topic, f"resume:{op.id}:{utcnow():%Y%m%d%H%M%S%f}", payload)
     return op
+
+
+# (provider, operation) -> job that consumes the operation's result, given the operation's subject id
+RESUME: dict[tuple[str, str], Callable[[str], tuple[str, dict]]] = {
+    ("biteship", "create_order"): lambda sid: ("biteship.create_order",
+                                               {"group_id": sid, "courier_company": "", "courier_type": ""}),
+    ("doku", "create_payment"): lambda sid: ("doku.create_payment", {"payment_id": sid}),
+}
