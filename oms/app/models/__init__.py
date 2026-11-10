@@ -9,6 +9,7 @@ from app.models import (  # noqa: F401
     governance,
     inventory,
     marketing,
+    messaging,
     orders,
     org,
     platforms,

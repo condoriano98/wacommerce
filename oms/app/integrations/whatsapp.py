@@ -82,18 +82,32 @@ class WhatsAppSender(Protocol):
 
 
 class MockWhatsAppSender:
-    sent: list[dict] = []
+    """Mock Cloud API: every accepted send is recorded provider-side (see ``app.integrations.mockstore``)."""
+
+    @property
+    def sent(self) -> list[dict]:
+        from app.integrations import mockstore
+
+        with mockstore.state("whatsapp") as st:
+            return list(st.get("sent", []))
+
+    def _record(self, item: dict) -> str:
+        import uuid as _uuid
+
+        from app.integrations import mockstore
+
+        with mockstore.state("whatsapp") as st:
+            wamid = f"wamid.mock.{_uuid.uuid4().hex[:16]}"
+            st.setdefault("sent", []).append({**item, "wamid": wamid})
+        mockstore.fault_after_accept("whatsapp", "send_message")
+        return wamid
 
     def send_text(self, phone_number_id: str, to: dict, body: str) -> str:
-        wamid = f"wamid.mock.{len(self.sent) + 1}"
-        self.sent.append({"type": "text", "pnid": phone_number_id, "to": to, "body": body, "wamid": wamid})
-        return wamid
+        return self._record({"type": "text", "pnid": phone_number_id, "to": to, "body": body})
 
     def send_template(self, phone_number_id, to, template, language, params) -> str:
-        wamid = f"wamid.mock.{len(self.sent) + 1}"
-        self.sent.append({"type": "template", "pnid": phone_number_id, "to": to, "template": template,
-                          "params": params, "wamid": wamid})
-        return wamid
+        return self._record({"type": "template", "pnid": phone_number_id, "to": to, "template": template,
+                             "language": language, "params": params})
 
 
 class LiveWhatsAppSender:

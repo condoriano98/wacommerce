@@ -121,6 +121,7 @@ class Message(OrgMixin, Base):
     customer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("customers.id"), index=True)
     direction: Mapped[str]  # inbound | outbound
     author: Mapped[str]  # customer | ai | human | system
+    origin: Mapped[str | None]  # meta | chatwoot | oms — where the message entered the system
     external_id: Mapped[str | None]  # wamid
     body: Mapped[str | None]
     payload: Mapped[dict] = mapped_column(default=dict)

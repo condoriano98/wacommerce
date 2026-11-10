@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     meta_app_secret: str = "dev-meta-app-secret"
     meta_verify_token: str = "dev-verify-token"
     chatwoot_base_url: str = "http://chatwoot.local"
+    # HMAC secret for Chatwoot API-channel callbacks (X-Chatwoot-Signature over "{timestamp}.{body}").
+    chatwoot_webhook_secret: str = "dev-chatwoot-webhook-secret"
 
     outbox_max_attempts: int = 8
     capi_max_event_age_days: int = 7
