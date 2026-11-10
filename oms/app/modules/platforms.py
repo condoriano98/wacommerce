@@ -70,3 +70,21 @@ def serialize_account(a: PlatformAccount) -> dict:
         "last_sync_ok_at": a.last_sync_ok_at, "last_sync_failed_at": a.last_sync_failed_at,
         "last_error": a.last_error,
     }
+
+
+def reencrypt_credentials(org_id: uuid.UUID, account_id: uuid.UUID) -> int:
+    """Key rotation: re-encrypt every credential of an account with the current master key (values unchanged,
+    version bumped, audited by ``rotate_credential``). Runs as the worker role."""
+    with worker_session(org_id) as session:
+        names = [r[0] for r in session.execute(text("select name from list_credentials(:a)"), {"a": account_id})]
+        n = 0
+        for name in names:
+            row = session.execute(text("select * from credential_for_rotation(:a, :n)"),
+                                  {"a": account_id, "n": name}).one()
+            if row.ciphertext is None:
+                continue
+            plain = decrypt_secret(bytes(row.ciphertext))
+            n += bool(session.execute(text("select rotate_credential(:a, :n, :v, :c, null)"),
+                                      {"a": account_id, "n": name, "v": row.version,
+                                       "c": encrypt_secret(plain)}).scalar())
+        return n

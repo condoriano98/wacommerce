@@ -16,6 +16,7 @@ os.environ["OMS_WEBHOOK_DATABASE_URL"] = f"postgresql+psycopg://oms_webhook:oms_
 os.environ.setdefault("OMS_DB_ROLE_MODE", "v31")
 os.environ["OMS_MIGRATION_DATABASE_URL"] = f"{PG_ADMIN}/{TEST_DB}"
 os.environ["OMS_JWT_SECRET"] = "test-secret"
+os.environ.setdefault("OMS_BITESHIP_WEBHOOK_TOKEN", "test-biteship-token")
 
 from contextlib import contextmanager  # noqa: E402
 

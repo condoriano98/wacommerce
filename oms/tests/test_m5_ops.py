@@ -96,7 +96,12 @@ def test_metrics_endpoint_protection_and_injected_failures(tenant, client, metri
 def test_metrics_disabled_without_token_and_readyz(client):
     assert client.get("/metrics").status_code == 404
     r = client.get("/readyz")
-    assert r.status_code == 200 and r.json()["schema"] == "0016"
+    from alembic.script import ScriptDirectory
+
+    from app.core.alembic_cfg import alembic_config
+
+    head = ScriptDirectory.from_config(alembic_config()).get_current_head()
+    assert r.status_code == 200 and r.json()["schema"] == head
 
 
 def test_circuit_breaker_fails_fast_without_sending():

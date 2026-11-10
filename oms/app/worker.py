@@ -126,9 +126,13 @@ def check_invariants(timestamp: int) -> dict:
 
 
 def main() -> None:
+    from app.core.config import production_problems
     from app.core.observability import configure_logging
 
     configure_logging()
+    problems = production_problems(get_settings())
+    if problems:
+        raise SystemExit("unsafe configuration: " + "; ".join(problems))
     procrastinate_app.run_worker(queues=QUEUES, update_heartbeat_interval=10.0,
                                  stalled_worker_timeout=STALLED_AFTER_SECONDS)
 

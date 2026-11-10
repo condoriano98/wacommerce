@@ -32,5 +32,5 @@ def conversation_by_chatwoot(chatwoot_conversation_id: int, session: DbSession, 
 
 
 @router.get("/tools")
-def list_tools() -> dict:
+def list_tools(principal: CurrentPrincipal) -> dict:
     return {"allowed_or_conditional": sorted(agent.SCHEMAS), "human_only": sorted(agent.HUMAN_ONLY)}

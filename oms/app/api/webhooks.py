@@ -44,7 +44,12 @@ async def doku_receive(request: Request) -> dict:
 
 
 @router.post("/webhooks/biteship")
-async def biteship_receive(request: Request) -> dict:
+async def biteship_receive(request: Request, token: str = "") -> dict:
+    import hmac
+
+    expected = get_settings().biteship_webhook_token
+    if not expected or not hmac.compare_digest(token, expected):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid webhook token")
     raw = await request.body()
     return await run_in_threadpool(provider_webhooks.receive_biteship, raw)
 

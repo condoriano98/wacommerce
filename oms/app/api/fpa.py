@@ -78,7 +78,7 @@ def stress(body: StressIn, session: DbSession, principal: CurrentPrincipal) -> d
 
 
 @router.get("/simulations/scenarios")
-def scenarios() -> dict:
+def scenarios(principal: CurrentPrincipal) -> dict:
     return {"scenarios": sorted(simulator.SCENARIOS), "presets": sorted(simulator.PRESETS),
             "monte_carlo_enabled": simulator.MONTE_CARLO_ENABLED, "engine_version": simulator.ENGINE_VERSION}
 

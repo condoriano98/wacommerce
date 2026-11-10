@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     jwt_ttl_minutes: int = 480
     # Fernet key (urlsafe base64, 32 bytes) for platform credentials.
     credentials_master_key: str = "q4nJ0l0Yk5Dk0c8h3mGQx1u8y0dZ8C0lV3m6f0QzJ7k="
+    credentials_previous_keys: str = ""  # comma-separated, decrypt-only during a key rotation
 
     meta_graph_version: str = "v27.0"
     meta_app_secret: str = "dev-meta-app-secret"
@@ -35,6 +36,9 @@ class Settings(BaseSettings):
     # DOKU notification signature secret (merchant secret key; from the secret store in deployed environments).
     doku_notification_secret: str = "dev-doku-secret"
     doku_notification_path: str = "/webhooks/doku"
+    # Biteship webhook authentication is unverified (G-BS2): the callback URL carries a shared secret token
+    # (``/webhooks/biteship?token=…``, configured in the Biteship dashboard). Empty → endpoint refuses all callbacks.
+    biteship_webhook_token: str = ""
 
     outbox_max_attempts: int = 8
     # Bearer token for /metrics (Prometheus). Empty → endpoint disabled (404).
@@ -44,6 +48,31 @@ class Settings(BaseSettings):
     capi_max_event_age_days: int = 7
     attribution_lookback_days: int = 7
     insights_repull_days: int = 28
+
+
+DEV_DEFAULTS = {
+    "jwt_secret": "dev-only-change-me",
+    "credentials_master_key": "q4nJ0l0Yk5Dk0c8h3mGQx1u8y0dZ8C0lV3m6f0QzJ7k=",
+    "meta_app_secret": "dev-meta-app-secret",
+    "meta_verify_token": "dev-verify-token",
+    "chatwoot_webhook_secret": "dev-chatwoot-webhook-secret",
+    "doku_notification_secret": "dev-doku-secret",
+}
+
+
+def production_problems(s: "Settings") -> list[str]:
+    """Settings that must never reach production: dev defaults or empty secrets (checked at process start)."""
+    if s.env not in ("production", "staging"):
+        return []
+    problems = [f"{k} uses the development default" for k, v in DEV_DEFAULTS.items() if getattr(s, k) == v]
+    if len(s.jwt_secret) < 32:
+        problems.append("jwt_secret shorter than 32 characters")
+    if not s.biteship_webhook_token:
+        problems.append("biteship_webhook_token is empty")
+    for url in ("database_url", "worker_database_url", "webhook_database_url"):
+        if ":oms_app@" in getattr(s, url) or ":oms_worker@" in getattr(s, url) or ":oms_webhook@" in getattr(s, url):
+            problems.append(f"{url} uses the development password")
+    return problems
 
 
 @lru_cache

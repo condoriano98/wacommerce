@@ -6,9 +6,12 @@ from fastapi.responses import PlainTextResponse
 import app.registry  # noqa: F401  (handlers + subscribers)
 from app.api import agent, foundation, fpa, imports, operations, reads, webhooks
 from app.core import observability  # noqa: E402
-from app.core.config import get_settings  # noqa: E402
+from app.core.config import get_settings, production_problems  # noqa: E402
 
 observability.configure_logging()
+_problems = production_problems(get_settings())
+if _problems:  # refuse to start production/staging with development secrets
+    raise RuntimeError("unsafe configuration: " + "; ".join(_problems))
 app = FastAPI(title="wacommerce OMS", version="0.1.0")
 observability.install(app)
 app.include_router(foundation.router)

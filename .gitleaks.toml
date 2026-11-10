@@ -1,0 +1,17 @@
+# Secret scanning (M5). Development defaults are intentionally committed: they are refused at process start in
+# staging/production (oms/app/core/config.py production_problems) and are not valid for any real service.
+title = "wacommerce gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "development defaults, test fixtures and documentation examples"
+paths = [
+  '''oms/app/core/config\.py''',
+  '''oms/tests/.*''',
+  '''dashboard/tests/.*''',
+  '''docs/.*''',
+  '''oms/uv\.lock''',
+  '''dashboard/package-lock\.json''',
+]

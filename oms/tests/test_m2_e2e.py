@@ -52,7 +52,7 @@ def doku_notify(client, invoice, amount, status_, request_id):
 
 
 def biteship_notify(client, order_id, status_):
-    return client.post("/webhooks/biteship", content=json.dumps({"event": "order.status", "order_id": order_id,
+    return client.post(f"/webhooks/biteship?token={get_settings().biteship_webhook_token}", content=json.dumps({"event": "order.status", "order_id": order_id,
                                                                  "status": status_}).encode())
 
 
