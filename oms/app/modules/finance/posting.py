@@ -288,15 +288,26 @@ def cod_carrier_cost_reclass(session: Session, order: Order, shipment_id: str, a
 # --- settlements ----------------------------------------------------------------------------------------------
 
 
-def cod_remitted(session: Session, org_id, legal_entity_id, source_id: str, by_portfolio: dict, carrier_account_id,
+def cod_remitted(session: Session, org_id, legal_entity_id, source_id: str, by_order: dict, carrier_account_id,
                  to_bank: bool = False) -> None:
-    """Carrier remits collected COD: Dr carrier balance (or funds in transit to bank) / Cr COD receivable."""
+    """Carrier remits collected COD: Dr carrier balance (or funds in transit to bank) / Cr COD receivable, per order
+    and portfolio (so each order's receivable visibly clears). ``by_order``: {(portfolio_id, order_id): (applied,
+    excess)}; the excess — money no open receivable explains — is held in 2400 suspense (round 2)."""
     debit = PAYOUT_ACCOUNT if to_bank else A.CARRIER_BALANCE
     lines = []
-    for pid, amount in by_portfolio.items():
-        kw = {"portfolio_id": pid, "platform_account_id": carrier_account_id}
-        lines += [JournalLine(debit, debit=amount, **kw), JournalLine(A.COD_RECEIVABLE, credit=amount, **kw)]
+    for (pid, oid), (applied, excess) in by_order.items():
+        kw = {"portfolio_id": pid, "order_id": oid, "platform_account_id": carrier_account_id}
+        lines += [JournalLine(debit, debit=applied + excess, **kw), JournalLine(A.COD_RECEIVABLE, credit=applied, **kw),
+                  JournalLine(A.SETTLEMENT_SUSPENSE, credit=excess, **kw)]
     _post(session, org_id, legal_entity_id, "cod_remitted", source_id, lines)
+
+
+def settlement_adjustment(session: Session, order: Order, item: OrderItem, amount: Decimal, source_id: str) -> None:
+    """Approved acceptance of a settlement variance: the receivable the provider will not pay is written to
+    marketplace fees/claims (Dr 5300 / Cr 1110)."""
+    _post(session, order.organization_id, entity_for_order(session, order), "settlement_adjustment", source_id, [
+        JournalLine(A.MARKETPLACE_FEES, debit=amount, **_kw(item, order)),
+        JournalLine(A.MARKETPLACE_RECEIVABLE, credit=amount, **_kw(item, order))])
 
 
 def carrier_withdrawal(session: Session, org_id, legal_entity_id, source_id: str, gross: Decimal, fee: Decimal,
@@ -313,6 +324,8 @@ class MarketplaceItemSettlement:
     net_paid: Decimal
     withheld_tax: Decimal
     fee_true_up: Decimal  # actual fee share - accrued expected fee (negative = over-accrued)
+    applied: Decimal | None = None  # receivable cleared (≤ outstanding); None = everything explained
+    excess: Decimal = ZERO  # explained but not owed: held in 2400 suspense (round 2)
 
 
 def marketplace_settled(session: Session, order: Order, source_id: str, items: list[MarketplaceItemSettlement], *,
@@ -326,6 +339,10 @@ def marketplace_settled(session: Session, order: Order, source_id: str, items: l
               "platform_account_id": platform_account_id}
         cleared = a.net_paid + a.withheld_tax + a.fee_true_up
         explained += cleared
+        if a.applied is not None:
+            cleared = a.applied
+            if a.excess:
+                lines.append(JournalLine(A.SETTLEMENT_SUSPENSE, credit=a.excess, **kw))
         if a.net_paid >= 0:
             lines.append(JournalLine(PAYOUT_ACCOUNT, debit=a.net_paid, **kw))
         else:

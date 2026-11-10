@@ -88,6 +88,20 @@ def match(session: Session, org_id, kind: str, ref: str, *, actual_ref: str, act
                       operator_user_id=operator_user_id)
 
 
+def accumulate(session: Session, item: ReconciliationItem, *, actual_ref: str, amount: Decimal, entry: dict,
+               final: bool, operator_user_id=None) -> ReconciliationItem:
+    """Partial settlements add up (round 2): each receipt is appended to the item's evidence and its amount to the
+    cumulative actual. Only a final receipt decides matched vs variance; before that the item stays open."""
+    cumulative = (item.actual_amount or Decimal("0")) + amount
+    item.evidence = {**item.evidence, "receipts": [*item.evidence.get("receipts", []), entry]}
+    if final:
+        return match_item(session, item, actual_ref=actual_ref, actual_amount=cumulative, evidence={},
+                          operator_user_id=operator_user_id)
+    item.actual_ref, item.actual_amount = actual_ref, cumulative
+    item.difference = cumulative - item.expected_amount
+    return item
+
+
 def match_item(session: Session, item: ReconciliationItem, *, actual_ref: str, actual_amount: Decimal, evidence: dict,
                operator_user_id=None) -> ReconciliationItem:
     item.actual_ref, item.actual_amount = actual_ref, actual_amount

@@ -68,6 +68,7 @@ class Settlement(OrgMixin, Base):
     bank_reference: Mapped[str | None]
     status: Mapped[str] = mapped_column(default="received")  # received | reconciled | mismatch
     data_source: Mapped[str] = mapped_column(default="api")
+    content_sha256: Mapped[str | None]  # same id + same content = replay; same id + other content = flagged
 
 
 class SettlementLine(OrgMixin, Base):
@@ -82,6 +83,7 @@ class SettlementLine(OrgMixin, Base):
     expected_amount: Mapped[Decimal | None]
     match_status: Mapped[str] = mapped_column(default="unmatched")  # matched | unmatched | variance
     variance: Mapped[Decimal | None]
+    line_no: Mapped[int]  # position in the provider report; (settlement_id, line_no) unique, rows immutable
 
 
 class OperatingExpense(OrgMixin, Base):

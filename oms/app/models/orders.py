@@ -87,7 +87,9 @@ class Order(OrgMixin, Base):
     payment_method: Mapped[str]  # doku_link | manual_transfer | cod | marketplace
     payment_status: Mapped[str] = mapped_column(default="unpaid")  # unpaid | paid | cod_pending | collected | refunded
     fulfillment_route: Mapped[str | None]
-    settlement_status: Mapped[str] = mapped_column(default="none")  # none | expected | settled | mismatch
+    # Derived from ledger, reconciliation and cases (settlements.derive_settlement_status): none | expected |
+    # partially_settled | matched | variance | under_review | adjusted | closed
+    settlement_status: Mapped[str] = mapped_column(default="none")
     refund_status: Mapped[str] = mapped_column(default="none")
     currency: Mapped[str] = mapped_column(default="IDR")
     subtotal: Mapped[Decimal]

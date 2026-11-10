@@ -56,7 +56,7 @@ def derive_status(session: Session, order: Order) -> str:
         elif returned:
             new = "partially_returned"
         elif delivered == ordered:
-            new = "closed" if order.settlement_status == "settled" else "delivered"
+            new = "closed" if order.settlement_status in ("matched", "adjusted", "closed") else "delivered"
         elif delivered:
             new = "partially_delivered"
         elif shipped or allocated:

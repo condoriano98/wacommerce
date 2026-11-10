@@ -87,6 +87,20 @@ CHECKS = {
         "join portfolios p on p.id = le.portfolio_id join brands b on b.id = p.brand_id "
         "where le.legal_entity_id is not null and b.legal_entity_id is not null "
         "and le.legal_entity_id <> b.legal_entity_id",
+    # Round 2 / P0-3: a receivable is never cleared twice.
+    "marketplace_receivable_negative":
+        "select order_item_id::text as ref, sum(debit - credit) as amount from ledger_entries "
+        "where account_code = '1110' and order_item_id is not null group by order_item_id "
+        "having sum(debit - credit) < 0",
+    "cod_receivable_negative":
+        "select order_id::text as ref, sum(debit - credit) as amount from ledger_entries "
+        "where account_code = '1100' and order_id is not null group by order_id having sum(debit - credit) < 0",
+    # Money in settlement suspense must be under investigation (an open case for the order).
+    "settlement_suspense_without_case":
+        "select le.order_id::text as ref, sum(le.credit - le.debit) as amount from ledger_entries le "
+        "where le.account_code = '2400' and le.order_id is not null group by le.order_id "
+        "having sum(le.credit - le.debit) <> 0 and not exists (select 1 from exception_cases c "
+        "where c.order_id = le.order_id and c.type in ('marketplace_settlement_mismatch','cod_settlement_mismatch'))",
     # Round 2 / P0-1: legacy expectations whose provider account could not be proven need a human mapping.
     "reconciliation_identity_quarantined":
         "select id::text as ref, expected_amount as amount from reconciliation_items where identity_quarantined",

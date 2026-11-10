@@ -24,6 +24,8 @@ ACCOUNTS: dict[str, tuple[str, str, bool, bool]] = {
     "2020": ("Ads payables", "liability", False, True),
     "2100": ("Customer refunds payable", "liability", False, True),
     "2200": ("Contract liabilities (customer advances)", "liability", False, True),
+    # Money a provider paid that no open receivable explains (duplicate / excess payout); never clears a receivable.
+    "2400": ("Unapplied settlement receipts (suspense)", "liability", False, True),
     "2300": ("Taxes payable", "liability", False, False),
     "2900": ("Intercompany payable", "liability", False, False),
     "3000": ("Owner capital", "equity", False, False),
@@ -49,6 +51,7 @@ INACTIVE = {"1300", "3100"}
 CASH = "1000"
 GATEWAY_CLEARING = "1010"
 FUNDS_IN_TRANSIT = "1050"
+SETTLEMENT_SUSPENSE = "2400"
 CARRIER_BALANCE = "1020"
 PREPAID_ADS = "1030"
 COD_RECEIVABLE = "1100"
