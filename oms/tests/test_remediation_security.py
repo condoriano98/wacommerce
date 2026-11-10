@@ -139,3 +139,104 @@ def test_C2_portfolio_user_sees_status_of_own_lines_only(tenant, client):
                                               "where table_name = 'order_slices'")).all()}
     assert not cols & {"total", "subtotal", "shipping_fee", "shipping_address", "customer_id", "payment_status"}
     _ = utcnow() + timedelta(0)
+
+
+# --- C3 runtime tenant identity -------------------------------------------------------------------------------
+
+
+def _spoofed(t, other_org, user="owner"):
+    """An authenticated user of ``t`` whose transaction claims another organization (e.g. a compromised code path)."""
+    return tenant_session(other_org, t.users[user])
+
+
+def test_C3_own_user_with_another_orgs_id_sees_and_writes_nothing(tenant):
+    from tests.conftest import make_tenant
+
+    other = make_tenant()
+    build_world(other)
+    with _spoofed(tenant, other.org_id) as s:
+        for table in ("users", "products", "warehouses", "legal_entities", "brands", "portfolios", "orders",
+                      "ledger_entries", "outbox_messages", "role_assignments"):
+            n = s.execute(text(f"select count(*) from {table}")).scalar()
+            assert n == 0, (table, n)
+        assert s.execute(text("select app_org()")).scalar() is None
+    for sql in ("insert into outbox_messages (id, organization_id, created_at, topic, dedupe_key, payload, status, "
+                "attempts, next_attempt_at) values (gen_random_uuid(), :o, now(), 't', :k, '{}', 'pending', 0, now())",
+                "insert into products (id, organization_id, created_at, name, category) "
+                "values (gen_random_uuid(), :o, now(), 'x', 'fmcg')"):
+        with pytest.raises(Exception) as e:  # noqa: PT011
+            with _spoofed(tenant, other.org_id) as s:
+                s.execute(text(sql), {"o": other.org_id, "k": uuid.uuid4().hex})
+        assert "row-level security" in str(e.value) or "violates" in str(e.value)
+
+
+def test_C3_org_context_without_a_user_has_no_tenant(tenant):
+    build_world(tenant)
+    with tenant_session(tenant.org_id, None) as s:
+        assert s.execute(text("select app_org()")).scalar() is None
+        assert s.execute(text("select count(*) from products")).scalar() == 0
+
+
+def test_C3_token_for_a_user_of_another_org_is_rejected(tenant, client):
+    from app.core.security import issue_token
+    from tests.conftest import make_tenant
+
+    other = make_tenant()
+    forged = issue_token(tenant.users["owner"], other.org_id)  # valid signature, mismatched membership
+    r = client.get("/orders", headers={"Authorization": f"Bearer {forged}"})
+    assert r.status_code == 401
+
+
+def test_C3_identity_is_transaction_local_on_a_pooled_connection(tenant):
+    from sqlalchemy import create_engine
+
+    from app.core.config import get_settings
+
+    eng = create_engine(get_settings().database_url, pool_size=1, max_overflow=0)
+    try:
+        with eng.begin() as c:
+            c.execute(text("select set_config('app.org_id', :o, true), set_config('app.user_id', :u, true)"),
+                      {"o": str(tenant.org_id), "u": str(tenant.users["owner"])})
+            assert c.execute(text("select app_org()")).scalar() == tenant.org_id
+        with eng.begin() as c:  # same physical connection, next transaction
+            assert c.execute(text("select current_setting('app.org_id', true)")).scalar() in ("", None)
+            assert c.execute(text("select app_org()")).scalar() is None
+    finally:
+        eng.dispose()
+
+
+def test_C3_security_definer_functions_pin_search_path_and_are_not_public():
+    with owner_session() as s:
+        rows = s.execute(text("""
+            select p.oid::regprocedure::text, array_to_string(p.proconfig, ','),
+                   has_function_privilege('public', p.oid, 'execute')
+            from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+            where n.nspname = 'public' and p.prosecdef""")).all()
+    bad_path = [f for f, cfg, _ in rows if "search_path=public, pg_temp" not in (cfg or "")]
+    public_exec = [f for f, _, pub in rows if pub]
+    assert bad_path == [], bad_path
+    assert public_exec == [], public_exec
+
+
+def test_C3_ambiguous_shipment_reference_resolves_to_no_tenant(tenant):
+    from tests.conftest import make_tenant
+
+    other = make_tenant()
+    ref = f"BS-AMBIG-{uuid.uuid4().hex[:6]}"
+    for t in (tenant, other):
+        w = build_world(t)
+        oid = _order(t, w, [("A1", 1, "0")])
+        _pay_gateway(t, oid)
+        dispatch_due()
+        from app.modules import fulfillment
+        from tests.world import principal
+
+        (gid, _), = _owned_groups(oid)
+        with tenant_session(t.org_id, principal(t, "packer").user_id) as s:
+            from app.models.fulfillment import FulfillmentGroup
+
+            fulfillment.create_shipment(s, s.get(FulfillmentGroup, gid), carrier="biteship", external_id=ref)
+    from app.core.db import webhook_session
+
+    with webhook_session() as s:
+        assert s.execute(text("select organization_id from resolve_shipment(:r)"), {"r": ref}).scalar() is None

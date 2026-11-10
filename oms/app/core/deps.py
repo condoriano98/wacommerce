@@ -39,10 +39,13 @@ def get_principal(
 ) -> Principal:
     user_id, org_id = ids
     user = session.get(User, user_id)
-    if user is None or not user.is_active:
+    # The token's user must be an active member of the token's organization (the database enforces the same in
+    # app_org(); this rejects the request early and explicitly — remediation C3).
+    if user is None or not user.is_active or user.organization_id != org_id:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "inactive user")
     # RLS lets a user read their own assignments.
-    rows = session.scalars(select(RoleAssignment).where(RoleAssignment.user_id == user_id)).all()
+    rows = session.scalars(select(RoleAssignment).where(RoleAssignment.user_id == user_id,
+                                                        RoleAssignment.organization_id == org_id)).all()
     return Principal(
         user_id=user_id,
         org_id=org_id,

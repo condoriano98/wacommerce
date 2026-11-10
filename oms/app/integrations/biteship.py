@@ -9,6 +9,7 @@ Facts used (documentation-verified 2026-11-10, NOT sandbox-verified — see docs
 * Booking a paid shipment needs an approved ``paid_shipment_booking`` approval (spec §14).
 """
 
+import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -46,7 +47,8 @@ class MockBiteship:
             if any(o["reference_id"] == req.reference_id for o in orders.values()):
                 # The documented behaviour: duplicate reference rejected — but the first booking exists.
                 raise Rejected(f"{DUPLICATE_REFERENCE} duplicate reference_id")
-            oid = f"bs-{len(orders) + 1:06d}"
+            # Provider ids are globally unique (like Biteship's); a counter would repeat after a mock reset.
+            oid = f"bs-{len(orders) + 1:06d}-{uuid.uuid4().hex[:8]}"
             resp = {"ref": oid, "reference_id": req.reference_id, "waybill_id": f"WB{len(orders) + 1:08d}",
                     "price": "12000", "cod_amount": str(req.cod_amount), "status": "confirmed",
                     "updated_at": datetime.now(UTC).isoformat()}

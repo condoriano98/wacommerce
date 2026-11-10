@@ -60,9 +60,8 @@ def test_1_rls_fuzz_reads_and_writes_never_cross_org_or_portfolio(role, table, s
             s.execute(text("select set_config('app.org_id', :o, true)"), {"o": str(other.org_id)})
         rows = s.execute(text(f"select organization_id, portfolio_id from {table}")).all()
         orgs = {r[0] for r in rows}
-        if spoof:
-            assert t.org_id not in orgs
-            assert not [r for r in rows if r[1] is not None], (role, table)  # no portfolio rows of the other org
+        if spoof:  # no tenant at all: the user is not a member of the claimed organization (remediation C3)
+            assert rows == [], (role, table, len(rows))
         else:
             assert orgs <= {t.org_id}
             assert {r[1] for r in rows} - {None} <= visible, (role, table)
