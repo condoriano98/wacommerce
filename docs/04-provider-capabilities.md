@@ -34,6 +34,11 @@ covered only by offline respx contract tests (`oms/tests/test_m2_adapters.py`). 
 production-verified; every registry row stays `mocked` and no live client is selected without `live_enabled` +
 credentials (none exist).
 
+Marketplace & ads adapters (M4, 2026-11-10): Shopee, TikTok Shop (Tokopedia & Shop), Lazada, Meta insights, Google
+Ads, TikTok Ads are **mock_tested** (contract tests on documentation-derived payloads; signing per published schemes;
+never sent). Registry rows are refreshed by `channel_sync.refresh_capabilities`; CSV import (`/imports/*`) is the
+operational path until access is granted.
+
 CSV fallback (all sales/ads/settlement/bank imports): schema-validated import batches, provenance (file hash, uploader,
 source), row fingerprints for duplicate prevention, dry-run preview, reconciliation against existing records.
 

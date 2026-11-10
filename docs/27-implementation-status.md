@@ -143,6 +143,28 @@ reads the OMS API only) with its own CI workflow `dashboard-ci.yml`.
   to sign-in and running simulations.
 - Simulator inputs are illustrative; calibration from ledger actuals beyond elapsed-week override is not automated.
 
+## M4 — Marketplace & advertising expansion (mock_tested only)
+
+### Acceptance-test ownership → evidence
+| # | Test |
+|---|---|
+| 10 | `test_m4_channels.py::test_10_missing_credentials_means_not_authorized_and_no_calls`, `test_m4_imports_ads.py::test_10_live_ads_account_without_access_makes_no_calls` — live-enabled account without credentials: registry `not_authorized`, respx sees zero HTTP calls, mock adapter not called either |
+| 11b | `test_m4_channels.py::test_11b_*` — missing payout ages into `marketplace_settlement_mismatch` with full exposure, late exact payout matches and resolves the case, replay idempotent; short payout opens a case with the shortfall as exposure |
+| Contracts | `test_m4_channels.py` (normalisers on documentation-derived fixtures for Shopee/TikTok Shop/Lazada, signing schemes, LiveShopee pagination + error mapping via respx), `test_m4_imports_ads.py` (Meta insights) |
+| Sync | windowed idempotent order sync with per-order error isolation, lost-push recovery, concurrent single-use token rotation (two connections, barrier: each refresh token spent exactly once), scheduled runs isolating a failing account |
+| Imports | dry-run changes nothing; commit applies through domain services; re-upload deduplicated; invalid file rejected as a whole with line numbers; provenance (sha256, uploader) |
+
+### Registry as built
+Adapters with contract tests are `implementation_status = mock_tested`; `access_state` is `mocked` (not live-enabled),
+`not_authorized` (live-enabled without credentials) or `temporarily_unavailable` (sync failure). No account can show
+`available` without stored credentials, and no capability is `operationally_ready` (requires production_verified).
+**No adapter is sandbox- or production-verified.** Fixtures are documentation-derived, not recorded from real shops.
+
+### Open blockers (unchanged, external)
+Shopee shop eligibility (Seller In-house app), TikTok Shop ISV/partner access for multi-shop, Lazada app approval
+(Sponsored Solutions category unverified), Google Ads/Data Manager access, TikTok Ads app review, Meta `ads_read` system
+user. CSV imports are the supported path until access exists.
+
 ## Milestone log
 **M3 closed 2026-11-10**: local and CI green (both workflows) on `24a559f`/`26e3d68`; no external systems involved.
 **M2 closed 2026-11-10**: local and CI green on `65224c0`; all providers mocked, n8n not externally verified.
@@ -155,3 +177,4 @@ reads the OMS API only) with its own CI workflow `dashboard-ci.yml`.
 | M1 worker | `3057cd1` | ✅ push run 8 (42749665055), PR run 9 (42749670705) | 84/0/0 (`cd oms && uv run pytest`, PostgreSQL 16.x local) | Procrastinate executor (0008, `app/worker.py`) | G-PROC verified locally |
 | M2 | `9d2473e` (slices `09c9d33`, `f634227`, `9692cc6`) | ✅ push run 17 (42753626706), PR run 18 (42753632856); slices ✅ runs 11, 13, 15 | 117/0/0 (`cd oms && uv run pytest`) | WhatsApp vertical slice, #5, #6, #14, #15, E2E | none — all providers mocked; n8n not verified |
 | M3 | `24a559f` (slices `d0658a7`→fix `d367e84`, `76ff6c5`→fix `55a9a29`, `ef4792e`) | ✅ OMS push 30 / PR 31, Dashboard push 1 / PR 2 (`24a559f`); PR runs OMS 32 + Dashboard 3 (`26e3d68`) | 130/0/0 OMS (`cd oms && uv run pytest`); dashboard build + 5/0/0 Playwright | waterfall + tie-out, #12, #13b, S1–S9 + #18, cash forecast, bulk-buy, FP&A API, dashboard | none — no external systems involved; Metabase instance unverified |
+| M4 | `9d45743` | _pending_ | 145/0/0 (`cd oms && uv run pytest`) | adapters (mock), channel sync, CSV imports, #10, #11b | none — all marketplace/ads access blocked (see blockers) |
