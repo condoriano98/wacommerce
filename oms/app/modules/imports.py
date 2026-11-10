@@ -24,6 +24,8 @@ from app.core.audit import audit
 from app.core.authz import Principal
 from app.models.base import utcnow
 
+REPORTING_CURRENCY = "IDR"
+
 
 @dataclass(frozen=True)
 class Schema:
@@ -38,7 +40,8 @@ SCHEMAS = {
     "marketplace_settlement": Schema({"payout_id": "str", "external_order_id": "str", "gross": "decimal",
                                       "fee": "decimal", "tax_withheld": "decimal", "net": "decimal"},
                                      "finance.manage", ("payout_id", "external_order_id")),
-    "ads_spend": Schema({"report_date": "date", "campaign_id": "str", "ad_id": "str", "spend": "decimal"},
+    "ads_spend": Schema({"report_date": "date", "campaign_id": "str", "ad_id": "str", "spend": "decimal",
+                         "currency": "str"},
                         "marketing.manage", ("report_date", "ad_id", "spend")),
     "marketplace_orders": Schema({"external_order_id": "str", "status": "str", "external_sku_ref": "str",
                                   "qty": "int", "unit_price": "decimal"},
@@ -83,14 +86,28 @@ def run_import(session: Session, principal: Principal, source: str, file_name: s
         except (ValueError, InvalidOperation) as exc:
             errors.append({"line": line_no, "error": f"invalid value: {exc}"})
             continue
+        if "currency" in row and row["currency"].upper() != REPORTING_CURRENCY:
+            errors.append({"line": line_no, "error": f"currency {row['currency']} not supported: no FX conversion "
+                                                     f"policy configured (G-ADS1); only {REPORTING_CURRENCY}"})
+            continue
         rows.append((line_no, row, _fingerprint(source, row, schema, scope)))
+    # Deduplicate within the file first: a repeated line must never reach the domain services twice.
+    unique, in_file_dupes, firsts = [], [], set()
+    for ln, r, f in rows:
+        if f in firsts:
+            in_file_dupes.append(ln)
+        else:
+            firsts.add(f)
+            unique.append((ln, r, f))
+    rows = unique
     seen = set(session.scalars(text("select fingerprint from import_rows where source = :s and fingerprint = any(:f)"),
                                {"s": source, "f": [f for _, _, f in rows]}).all()) if rows else set()
     new = [(ln, r, f) for ln, r, f in rows if f not in seen]
     batch_id = uuid.uuid4()
     file_sha = hashlib.sha256(content.encode()).hexdigest()
-    stats = {"rows": len(rows) + len(errors), "valid": len(rows), "invalid": len(errors), "new": len(new),
-             "duplicates": len(rows) - len(new)}
+    stats = {"rows": len(rows) + len(in_file_dupes) + len(errors), "valid": len(rows) + len(in_file_dupes),
+             "invalid": len(errors), "new": len(new), "duplicates": len(rows) - len(new),
+             "duplicates_in_file": len(in_file_dupes)}
     batch_status = "dry_run" if dry_run else ("rejected" if errors else "committed")
     session.execute(text(
         "insert into import_batches (id, organization_id, created_at, source, platform_account_id, file_name, "
@@ -100,13 +117,23 @@ def run_import(session: Session, principal: Principal, source: str, file_name: s
          "u": principal.user_id, "st": batch_status, "stats": _json(stats), "err": _json(errors)})
     if dry_run or errors:  # all-or-nothing: a file with invalid rows is rejected as a whole
         return {"batch_id": str(batch_id), "status": batch_status, "file_sha256": file_sha, **stats, "errors": errors}
+    # Claim rows atomically: only rows whose tracking insert succeeds in THIS transaction are applied. A concurrent
+    # upload of the same file blocks on the unique index and then claims nothing.
+    rt = _rows_table()
+    claimed = []
     for ln, r, f in new:
-        session.execute(insert(_rows_table()).values(
+        got = session.execute(insert(rt).values(
             id=uuid.uuid4(), organization_id=principal.org_id, batch_id=batch_id, source=source, line_no=ln,
             fingerprint=f, data=_json_safe(r), result="applied").on_conflict_do_nothing(
-            index_elements=["organization_id", "source", "fingerprint"]))
-    applied = APPLY[source](session, principal, [r for _, r, _ in new], platform_account_id=platform_account_id,
-                            bank_account_id=bank_account_id, batch=str(batch_id))
+            index_elements=["organization_id", "source", "fingerprint"]).returning(rt.c.fingerprint)).scalar()
+        if got is not None:
+            claimed.append(r)
+    stats["claimed"] = len(claimed)
+    stats["duplicates"] += len(new) - len(claimed)
+    session.execute(text("update import_batches set stats = cast(:st as jsonb) where id = :i"),
+                    {"st": _json(stats), "i": batch_id})
+    applied = APPLY[source](session, principal, claimed, platform_account_id=platform_account_id,
+                            bank_account_id=bank_account_id, batch=str(batch_id)) if claimed else 0
     audit(session, principal.org_id, "import.committed", "import_batch", batch_id, actor_user_id=principal.user_id,
           after={"source": source, "file_sha256": file_sha, **stats})
     return {"batch_id": str(batch_id), "status": batch_status, "file_sha256": file_sha, **stats, "applied": applied,
@@ -160,12 +187,16 @@ def _ads(session, principal, rows, *, platform_account_id, **_):
     from app.modules import marketing
 
     account = session.get(PlatformAccount, platform_account_id)
+    if account is None or account.legal_entity_id is None:  # no implicit entity: spend must land in the right books
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "ad account has no legal entity mapping; set it before importing spend")
     deltas = 0
     for r in rows:
         session.execute(insert(DailyAdInsight).values(
             id=uuid.uuid4(), created_at=utcnow(), organization_id=principal.org_id,
             platform_account_id=platform_account_id, provider=account.provider, report_date=r["report_date"],
-            campaign_external_id=r["campaign_id"], ad_external_id=r["ad_id"], spend=r["spend"], currency="IDR",
+            campaign_external_id=r["campaign_id"], ad_external_id=r["ad_id"], spend=r["spend"],
+            currency=r["currency"].upper(),
             impressions=0, reach=0, clicks=0, link_clicks=0, messaging_conversations=0, reported_conversions=0,
             reported_conversion_value=0, data_source="csv", pulled_at=utcnow(),
         ).on_conflict_do_update(index_elements=["platform_account_id", "report_date", "ad_external_id"],

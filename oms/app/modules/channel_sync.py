@@ -38,15 +38,33 @@ def _has_credentials(session, account: PlatformAccount) -> bool:
                                 {"a": account.id, "n": CREDENTIAL.get(account.provider, "access_token")}).scalar())
 
 
+REAUTH = "reauthorization_required"
+LIVE_CHECK = "live_check"
+
+
+def _caps(session, account: PlatformAccount) -> list[IntegrationCapability]:
+    return list(session.scalars(select(IntegrationCapability).where(
+        IntegrationCapability.platform_account_id == account.id)))
+
+
 def access_state(session, account: PlatformAccount) -> str:
+    """``available`` only after a recorded successful live authorization + capability check (none can pass today:
+    live adapters are refused). Credentials alone are ``verification_pending``; a shop needing reauthorization is
+    ``not_authorized``."""
     if not account.live_enabled:
         return "mocked"
-    return "not_authorized" if not _has_credentials(session, account) else "available"
+    caps = _caps(session, account)
+    if any(REAUTH in (c.blockers or []) for c in caps):
+        return "not_authorized"
+    if not _has_credentials(session, account):
+        return "not_authorized"
+    verified = caps and all(c.verification_source == LIVE_CHECK and c.last_contract_verified_at for c in caps)
+    return "available" if verified else "verification_pending"
 
 
 def refresh_capabilities(session, account: PlatformAccount, *, error: str | None = None) -> list[IntegrationCapability]:
     """Registry rows per capability. Adapters with contract tests are ``mock_tested``; access never reads
-    ``available`` without credentials; a failing sync marks ``temporarily_unavailable``."""
+    ``available`` without a passed live check; a failing sync marks ``temporarily_unavailable``."""
     state = "temporarily_unavailable" if error else access_state(session, account)
     out = []
     for cap in CAPABILITIES.get(account.provider, ()):
@@ -147,23 +165,52 @@ def sync_payouts(org_id: uuid.UUID, account_id: uuid.UUID, start: datetime, end:
         return {"status": "ok", "payouts": n}
 
 
+def _mark_reauth(session, account: PlatformAccount, reason: str) -> None:
+    for c in _caps(session, account) or refresh_capabilities(session, account):
+        c.blockers = sorted(set(c.blockers or []) | {REAUTH})
+        c.access_state = "not_authorized"
+    _error(session, account, "token_rotation", reason, {"action": "reauthorize the shop in the provider console"})
+
+
 def rotate_refresh_token(org_id: uuid.UUID, account_id: uuid.UUID, adapter) -> bool:
-    """Single-use refresh: lock, read, call the provider once, compare-and-set both tokens. A concurrent rotation
-    waits on the lock and then sees the new version (it must not spend the already-used refresh token)."""
+    """Single-use refresh token rotation with crash safety (ADR-015 applied to credentials).
+
+    1. Lock (advisory, transaction-scoped) and read the current refresh token + version.
+    2. If a previous rotation of this same version is recorded as ``sent`` (provider may have consumed the token but
+       the new tokens were never stored), DO NOT spend the token again: mark the operation ``uncertain``, flag the
+       account ``reauthorization_required`` and open a case. A human reauthorizes the shop (docs/26 runbook).
+    3. Otherwise record the operation as ``sent`` in its own committed transaction, call the provider once, then store
+       both new tokens AND confirm the operation in the locked transaction — atomically. If that transaction fails,
+       step 2 catches it on the next attempt.
+    """
+    from app.core import external_ops
+    from app.models.governance import ExternalOperation
+
     with worker_session(org_id) as s:
         row = s.execute(text("select * from credential_for_rotation(:a, 'refresh_token')"), {"a": account_id}).one()
         if row.ciphertext is None:
             return False
-        version = row.version
-        token = decrypt_secret(bytes(row.ciphertext))
-        new = adapter.refresh_token(token)
+        account = s.get(PlatformAccount, account_id)
+        key = f"{account_id}:refresh_token:v{row.version}"
+        op = external_ops.prepare(org_id, account.provider, "token_refresh", key, platform_account_id=account_id,
+                                  subject_type="platform_account", subject_id=str(account_id))
+        if op.status in ("sent", "uncertain"):
+            external_ops._uncertain(org_id, op.id, "refresh token may have been consumed; new tokens not stored")
+            _mark_reauth(s, account, "refresh token state uncertain after a failed rotation; reauthorization required")
+            return False
+        if op.status == "confirmed":  # already rotated from this version (should not happen under the lock)
+            return False
+        external_ops._update(org_id, op.id, status="sent", sent_at=utcnow(), attempts=op.attempts + 1)
+        new = adapter.refresh_token(decrypt_secret(bytes(row.ciphertext)))
         expires = utcnow() + timedelta(seconds=int(new.get("expire_in", 14400)))
         ok = s.execute(text("select rotate_credential(:a, 'refresh_token', :v, :c, :e)"),
-                       {"a": account_id, "v": version, "c": encrypt_secret(new["refresh_token"]),
+                       {"a": account_id, "v": row.version, "c": encrypt_secret(new["refresh_token"]),
                         "e": utcnow() + timedelta(days=30)}).scalar()
         cur = s.execute(text("select * from credential_for_rotation(:a, 'access_token')"), {"a": account_id}).one()
         s.execute(text("select rotate_credential(:a, 'access_token', :v, :c, :e)"),
                   {"a": account_id, "v": cur.version, "c": encrypt_secret(new["access_token"]), "e": expires})
+        o = s.get(ExternalOperation, op.id, with_for_update=True)
+        o.status, o.confirmed_at, o.response = "confirmed", utcnow(), {"rotated_from_version": row.version}
         return bool(ok)
 
 
@@ -182,7 +229,20 @@ def sync_insights(org_id: uuid.UUID, account_id: uuid.UUID, start, end) -> dict:
             run.status, run.error, run.finished_at = "skipped", "no live ads access", utcnow()
             refresh_capabilities(s, account)
             return {"status": "not_authorized", "calls": 0}
-        rows = ads.MockAds(account.provider).insights(start, end)
+        if account.legal_entity_id is None:  # no implicit default entity (financial boundary, G-ADS1)
+            run.status, run.error, run.finished_at = "failed", "ad account has no legal entity mapping", utcnow()
+            _error(s, account, "insights_mapping", "ad account has no legal entity mapping", {})
+            return {"status": "rejected", "reason": "no_legal_entity"}
+        fetched = ads.MockAds(account.provider).insights(start, end)
+        rows, rejected = [], 0
+        for r in fetched:  # spend is booked in IDR only until an FX conversion policy exists (G-ADS1)
+            if (r.pop("currency", "") or "").upper() != "IDR":
+                rejected += 1
+                continue
+            rows.append(r)
+        if rejected:
+            _error(s, account, "insights_currency", f"{rejected} insight rows not in IDR were rejected",
+                   {"rejected": rejected})
         touched = set()
         for r in rows:
             s.execute(insert(DailyAdInsight).values(
@@ -205,9 +265,10 @@ def sync_insights(org_id: uuid.UUID, account_id: uuid.UUID, start, end) -> dict:
                 s.add(camp)
                 s.flush()
             deltas += len(marketing.accrue_day(s, org_id, le, camp, day))
-        run.status, run.stats, run.finished_at = "ok", {"rows": len(rows), "accrual_deltas": deltas}, utcnow()
+        run.status, run.finished_at = "ok", utcnow()
+        run.stats = {"rows": len(rows), "rejected_currency": rejected, "accrual_deltas": deltas}
         refresh_capabilities(s, account)
-        return {"status": "ok", "rows": len(rows), "accrual_deltas": deltas}
+        return {"status": "ok", "rows": len(rows), "rejected_currency": rejected, "accrual_deltas": deltas}
 
 
 ADS = ("meta", "google_ads", "tiktok_ads")

@@ -17,3 +17,8 @@ Risks: marketplace account bans (mitigated: no automation); provider version chu
 financial misstatement from mis-set triggers (fixtures + accountant sign-off); Chatwoot/n8n operational load on Sumopod;
 single-founder approval bottleneck (approver ≠ requester requires ≥2 approvers — needs a second authorised person or a
 delegated approver policy **G-GOV1**).
+
+**G-ADS1** (added 2026-11-10, M4 review): before live Meta/Google/TikTok spend imports — confirm each ad account's
+billing currency, an FX conversion policy for non-IDR accounts (rate source, date, rounding, gains/losses), the
+ad-account → legal-entity mapping, and the period-close treatment of late revisions. Until then non-IDR rows are rejected
+and accounts without an explicit legal entity cannot import spend.

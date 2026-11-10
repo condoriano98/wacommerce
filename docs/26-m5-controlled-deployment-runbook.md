@@ -49,3 +49,16 @@ Status: **DRAFT — NOT EXECUTED**
 Release SHA, reviewer names, test run links, contract test results, backup and restore timestamps, measured RPO/RTO, dashboard links, integration feature-flag export (redacted), secrets-scan status, critical vulnerability remediation, migration log, rollback drill log, and final GO/NO-GO approval.
 
 **Never label this runbook executed or M5 complete without those artifacts.**
+
+
+## Runbook: marketplace token rotation uncertain (reauthorization required)
+
+Trigger: `external_uncertain` case for operation `token_refresh`, capability blocker `reauthorization_required`.
+Meaning: the provider may have consumed the single-use refresh token, but the new tokens were not stored. The OMS
+will **not** retry with the old token.
+1. Do not edit credentials in the database. Keep marketplace sync for the account paused (it is `not_authorized`).
+2. In the provider's seller/partner console, reauthorize the shop for the OMS app (new authorization code).
+3. Store the new tokens through `PUT /platform-accounts/{id}/credentials` (owner role; audited).
+4. Remove the `reauthorization_required` blocker by resolving the case (`/external-operations/{id}/resolve`,
+   `effect_exists=true`), then run one manual order sync and confirm the registry state.
+5. Record the incident (time window without sync) and run an order backfill for the gap.

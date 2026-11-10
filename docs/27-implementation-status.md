@@ -154,6 +154,14 @@ reads the OMS API only) with its own CI workflow `dashboard-ci.yml`.
 | Sync | windowed idempotent order sync with per-order error isolation, lost-push recovery, concurrent single-use token rotation (two connections, barrier: each refresh token spent exactly once), scheduled runs isolating a failing account |
 | Imports | dry-run changes nothing; commit applies through domain services; re-upload deduplicated; invalid file rejected as a whole with line numbers; provenance (sha256, uploader) |
 
+### M4 review findings (2026-11-10) — fixed
+| Sev | Finding | Fix | Evidence |
+|---|---|---|---|
+| P0 | Duplicate rows within one CSV could reach domain services twice | In-file dedupe by fingerprint; rows claimed with `ON CONFLICT DO NOTHING RETURNING`; only claimed rows applied; batch stats record `duplicates_in_file` / `claimed` | `test_m4_review_fixes.py::test_p0_duplicate_lines_within_one_file_are_applied_once`, `::test_p0_concurrent_uploads_of_the_same_file_apply_exactly_once` |
+| P1 | Registry could show `available` while live access is refused | `available` only after a recorded live authorization + capability check (`verification_source = live_check`); credentials alone → `verification_pending` (migration 0015); reauth blocker → `not_authorized` | `::test_p1_credentials_alone_are_verification_pending_never_available` |
+| P1 | Refresh-token crash after provider success | Rotation recorded as an external operation (`sent` committed before the call); new tokens + confirmation stored atomically; a later attempt finding `sent` never re-spends the token → `uncertain`, `reauthorization_required`, `external_uncertain` case; runbook in docs/26 | `::test_p1_db_failure_after_provider_rotation_requires_reauth_and_never_reuses_token` |
+| P1 | Ad spend boundaries (currency, entity, close) | Rows must carry currency; non-IDR rejected until an FX policy exists; ad accounts need an explicit legal entity (no default); closed-day re-pulls booked in the open period (asserted for CSV). Live ads imports remain gated by **G-ADS1** | `::test_p1_ad_spend_requires_idr_and_explicit_legal_entity`, `::test_p1_closed_period_ad_repull_is_booked_in_the_open_period` |
+
 ### Registry as built
 Adapters with contract tests are `implementation_status = mock_tested`; `access_state` is `mocked` (not live-enabled),
 `not_authorized` (live-enabled without credentials) or `temporarily_unavailable` (sync failure). No account can show
@@ -177,4 +185,4 @@ user. CSV imports are the supported path until access exists.
 | M1 worker | `3057cd1` | ✅ push run 8 (42749665055), PR run 9 (42749670705) | 84/0/0 (`cd oms && uv run pytest`, PostgreSQL 16.x local) | Procrastinate executor (0008, `app/worker.py`) | G-PROC verified locally |
 | M2 | `9d2473e` (slices `09c9d33`, `f634227`, `9692cc6`) | ✅ push run 17 (42753626706), PR run 18 (42753632856); slices ✅ runs 11, 13, 15 | 117/0/0 (`cd oms && uv run pytest`) | WhatsApp vertical slice, #5, #6, #14, #15, E2E | none — all providers mocked; n8n not verified |
 | M3 | `24a559f` (slices `d0658a7`→fix `d367e84`, `76ff6c5`→fix `55a9a29`, `ef4792e`) | ✅ OMS push 30 / PR 31, Dashboard push 1 / PR 2 (`24a559f`); PR runs OMS 32 + Dashboard 3 (`26e3d68`) | 130/0/0 OMS (`cd oms && uv run pytest`); dashboard build + 5/0/0 Playwright | waterfall + tie-out, #12, #13b, S1–S9 + #18, cash forecast, bulk-buy, FP&A API, dashboard | none — no external systems involved; Metabase instance unverified |
-| M4 | `9d45743` | _pending_ | 145/0/0 (`cd oms && uv run pytest`) | adapters (mock), channel sync, CSV imports, #10, #11b | none — all marketplace/ads access blocked (see blockers) |
+| M4 | `9d45743` + review fixes (this commit) | ✅ `9d45743` push 34 / PR 35, `b1a2735` PR 36; review fixes _pending_ | 151/0/0 | adapters (mock), channel sync, CSV imports, #10, #11b, review P0/P1 fixed | none — all marketplace/ads access blocked; G-ADS1 open |

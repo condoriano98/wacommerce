@@ -122,6 +122,7 @@ def test_ads_insights_sync_and_csv_repull_post_effective_dated_deltas(tenant):
     acc = _ads_account(tenant)
     day = utcnow().date() - timedelta(days=1)
     row = {"date_start": str(day), "campaign_id": "C9", "adset_id": "S9", "ad_id": "AD9", "spend": "50000",
+           "account_currency": "IDR",
            "impressions": "1000", "clicks": "40",
            "actions": [{"action_type": "onsite_conversion.messaging_conversation_started_7d", "value": "7"}]}
     MockAds.seed("meta", [row])
@@ -133,7 +134,7 @@ def test_ads_insights_sync_and_csv_repull_post_effective_dated_deltas(tenant):
         assert posting._balance(s, A.ADVERTISING, organization_id=tenant.org_id) == D("56000")
     # CSV re-pull with another revision: applied as a delta, identical re-upload ignored.
     owner = principal(tenant, "owner")
-    csv_ = f"report_date,campaign_id,ad_id,spend\n{day},C9,AD9,60000\n"
+    csv_ = f"report_date,campaign_id,ad_id,spend,currency\n{day},C9,AD9,60000,IDR\n"
     for expected in (1, 0):
         with tenant_session(tenant.org_id, owner.user_id) as s:
             assert imports.run_import(s, owner, "ads_spend", "meta.csv", csv_, dry_run=False,

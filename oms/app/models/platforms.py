@@ -80,7 +80,8 @@ class IntegrationSyncRun(OrgMixin, Base):
 
 
 IMPLEMENTATION_STATUSES = ("planned", "mock_tested", "sandbox_verified", "production_verified")
-ACCESS_STATES = ("available", "unsupported", "not_authorized", "temporarily_unavailable", "mocked", "planned")
+ACCESS_STATES = ("available", "unsupported", "not_authorized", "temporarily_unavailable", "mocked", "planned",
+                 "verification_pending")
 
 
 class IntegrationCapability(OrgMixin, Base):
@@ -92,7 +93,8 @@ class IntegrationCapability(OrgMixin, Base):
         UniqueConstraint("platform_account_id", "capability"),
         CheckConstraint("implementation_status in ('planned','mock_tested','sandbox_verified','production_verified')"),
         CheckConstraint(
-            "access_state in ('available','unsupported','not_authorized','temporarily_unavailable','mocked','planned')"
+            "access_state in ('available','unsupported','not_authorized','temporarily_unavailable','mocked','planned',"
+            "'verification_pending')", name="ck_capability_access_state"
         ),
     )
     platform_account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("platform_accounts.id"), index=True)

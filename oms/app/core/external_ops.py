@@ -38,6 +38,8 @@ POLICIES: dict[tuple[str, str], Policy] = {
     ("whatsapp", "send_message"): Policy(lookup=False),
     ("meta_capi", "send_event"): Policy(lookup=False),
     ("chatwoot", "post_message"): Policy(lookup=True),
+    # Single-use refresh tokens: a sent-but-unconfirmed rotation can never be retried (the token may be spent).
+    **{(p, "token_refresh"): Policy(lookup=False) for p in ("shopee", "tiktokshop", "lazada")},
 }
 
 

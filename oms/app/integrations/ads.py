@@ -18,7 +18,7 @@ def meta_row(r: dict) -> dict:
     return {"report_date": date.fromisoformat(r["date_start"]), "campaign_external_id": r["campaign_id"],
             "ad_group_external_id": r.get("adset_id"), "ad_external_id": r["ad_id"], "spend": Decimal(r["spend"]),
             "impressions": int(r.get("impressions", 0)), "clicks": int(r.get("clicks", 0)),
-            "messaging_conversations": convs}
+            "messaging_conversations": convs, "currency": r.get("account_currency", "")}
 
 
 def google_row(r: dict) -> dict:
@@ -27,7 +27,7 @@ def google_row(r: dict) -> dict:
             "ad_group_external_id": str(r["adGroup"]["id"]), "ad_external_id": str(r["adGroupAd"]["ad"]["id"]),
             "spend": (Decimal(str(m["costMicros"])) / Decimal(1_000_000)).quantize(Decimal("0.01")),
             "impressions": int(m.get("impressions", 0)), "clicks": int(m.get("clicks", 0)),
-            "messaging_conversations": 0}
+            "messaging_conversations": 0, "currency": r.get("customer", {}).get("currencyCode", "")}
 
 
 def tiktok_row(r: dict) -> dict:
@@ -36,7 +36,7 @@ def tiktok_row(r: dict) -> dict:
             "campaign_external_id": str(m["campaign_id"]), "ad_group_external_id": str(m.get("adgroup_id")),
             "ad_external_id": str(d["ad_id"]), "spend": Decimal(str(m["spend"])),
             "impressions": int(m.get("impressions", 0)), "clicks": int(m.get("clicks", 0)),
-            "messaging_conversations": 0}
+            "messaging_conversations": 0, "currency": m.get("currency", "")}
 
 
 NORMALISE = {"meta": meta_row, "google_ads": google_row, "tiktok_ads": tiktok_row}
