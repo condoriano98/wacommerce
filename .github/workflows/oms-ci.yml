@@ -1,0 +1,58 @@
+name: OMS core CI (no live providers)
+
+on:
+  pull_request:
+    paths:
+      - "oms/**"
+      - ".github/workflows/oms-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-oms:
+    name: Lint, migrations and PostgreSQL-backed tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    defaults:
+      run:
+        working-directory: oms
+    env:
+      OMS_ENV: test
+      OMS_TEST_DB: oms_test
+      OMS_TEST_PG_ADMIN: postgresql+psycopg://postgres:postgres@localhost:5432
+      OMS_JWT_SECRET: ci-only-not-for-production
+      OMS_META_APP_SECRET: ci-only-not-for-production
+      OMS_META_VERIFY_TOKEN: ci-only-not-for-production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: oms/pyproject.toml
+      - name: Install OMS and test tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest ruff respx testcontainers
+      - name: Compile application and tests
+        run: python -m compileall -q app tests
+      - name: Check Python lint
+        run: python -m ruff check .
+      - name: Run PostgreSQL-backed regression suite
+        run: python -m pytest -q
