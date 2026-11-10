@@ -66,6 +66,9 @@ PLAYBOOKS: dict[str, Playbook] = {
     "invariant_violation": Playbook("critical", "finance_manager", 4, ("investigate", "post_adjustment"),
                                     {"post_adjustment": "ledger_adjustment"}, None),
     "margin_breach": Playbook("high", "finance_manager", 72, ("reprice", "cut_channel", "accept_risk"), {}, None),
+    # Remediation B5: a provider reported a payout but no bank statement line has proven receipt yet.
+    "bank_unmatched": Playbook("high", "finance_manager", 72, ("chase_provider", "accept_variance"),
+                               {"accept_variance": "variance_acceptance"}, None),
     "manual_review": Playbook("medium", "portfolio_manager", 8, ("route_manually", "cancel_and_refund"),
                               {"cancel_and_refund": "refund"}, None),
 }

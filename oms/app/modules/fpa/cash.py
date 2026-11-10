@@ -1,6 +1,7 @@
 """13-week cash forecast from ledger balances (spec §15) and the risk-adjusted bulk-buy evaluator (docs/15).
 
-Forecast: opening bank (1000) + expected settlement of open receivables by channel delay − payables − open capital
+Forecast: opening verified bank cash (1000) + provider payouts awaiting bank proof (1050, week 1) + expected
+settlement of open receivables by channel delay − payables − open capital
 commitments. Transfers pending bank verification (1105) are excluded until matched (no asset for unverified money);
 the allowance (1109) is shown, never netted silently.
 """
@@ -16,7 +17,8 @@ from app.models.finance import LedgerEntry
 from app.modules.finance import accounts as A
 
 Z = Decimal("0")
-RECEIVABLE_DELAY_WEEKS = {A.GATEWAY_CLEARING: 1, A.COD_RECEIVABLE: 2, A.MARKETPLACE_RECEIVABLE: 2,
+# 1050 (provider-reported payouts not yet proven by a bank line) is an expected inflow, never opening cash (B5).
+RECEIVABLE_DELAY_WEEKS = {A.FUNDS_IN_TRANSIT: 1, A.GATEWAY_CLEARING: 1, A.COD_RECEIVABLE: 2, A.MARKETPLACE_RECEIVABLE: 2,
                           A.SUPPLIER_REFUND_RECEIVABLE: 2, A.CARRIER_BALANCE: 1}
 PAYABLE_DUE_WEEKS = {A.SUPPLIER_PAYABLES: 1, A.CARRIER_PAYABLES: 2, A.ADS_PAYABLES: 1, A.REFUNDS_PAYABLE: 1}
 
@@ -46,7 +48,8 @@ def forecast_13w(session: Session, legal_entity_id=None) -> dict:
     for w in weeks:
         cash += w["inflow"] - w["outflow"]
         w["closing_cash"] = cash
-    return {"opening_cash": str(b.get(A.CASH, Z)),
+    return {"opening_cash": str(b.get(A.CASH, Z)),  # verified bank cash only
+            "funds_in_transit_unverified": str(b.get(A.FUNDS_IN_TRANSIT, Z)),
             "excluded_unverified_transfers": str(b.get(A.TRANSFER_RECEIVABLE, Z)),
             "credit_loss_allowance": str(b.get(A.CREDIT_LOSS_ALLOWANCE, Z)),
             "weeks": [{k: (str(v) if isinstance(v, Decimal) else v) for k, v in w.items()} for w in weeks],

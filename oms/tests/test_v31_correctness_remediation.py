@@ -200,3 +200,165 @@ def test_B1_bank_match_after_partial_delivery_clears_only_the_recognised_receiva
         assert s.scalar(select(func.count()).select_from(OrderItem).where(
             OrderItem.order_id == oid, OrderItem.qty_delivered == 2)) == 1
     assert_balanced(tenant)
+
+
+# --- B4 multi-portfolio marketplace settlement ------------------------------------------------------------------
+
+
+def _multi_portfolio_marketplace_order(t, w, ext: str) -> uuid.UUID:
+    from app.core.db import worker_session
+    from app.models.catalog import PlatformListing
+    from app.models.platforms import PlatformAccount
+    from app.modules import catalog, orders
+
+    owner = principal(t, "owner")
+    with tenant_session(t.org_id, owner.user_id) as s:
+        if not s.scalars(select(PlatformListing).where(PlatformListing.external_sku_ref == "SHP-B1",
+                                                       PlatformListing.platform_account_id == w.shopee_seller)).first():
+            lst = catalog.upsert_listing(s, owner, portfolio_id=t.portfolios["B"], sku_id=w.sku["B1"].id,
+                                         platform_account_id=w.shopee_seller, price=D("80000"),
+                                         max_discount_rate=D("0.10"), commission_rate=D("0.08"))
+            lst.external_sku_ref = "SHP-B1"
+    payload = {"external_order_id": ext, "status": "ready_to_ship", "total": 200000,
+               "items": [{"external_sku_ref": "SHP-C1", "qty": 1, "unit_price": 120000},
+                         {"external_sku_ref": "SHP-B1", "qty": 1, "unit_price": 80000}]}
+    with worker_session(t.org_id) as s:
+        acc = s.get(PlatformAccount, w.shopee_seller)
+        oid = orders.ingest_marketplace_order(s, acc, payload)[0].id
+        orders.ingest_marketplace_order(s, acc, {**payload, "status": "delivered"})
+    return oid
+
+
+def _cash_like(**f) -> D:
+    return _gl("1000", **f) + _gl("1050", **f)
+
+
+def test_B4_marketplace_payout_is_allocated_to_each_portfolio_and_clears_its_receivable(tenant):
+    from app.modules import settlements
+
+    w = build_world(tenant)
+    oid = _multi_portfolio_marketplace_order(tenant, w, "SHP-MP-1")
+    pb, pc = tenant.portfolios["B"], tenant.portfolios["C"]
+    assert (_gl("1110", portfolio_id=pc), _gl("1110", portfolio_id=pb)) == (D("110400"), D("73600"))
+    fin = principal(tenant, "finance")
+    with tenant_session(tenant.org_id, fin.user_id) as s:
+        settlements.marketplace_payout(s, fin, w.shopee_seller, "PAYOUT-MP-1", [
+            {"external_order_id": "SHP-MP-1", "gross": "200000", "fee": "17000", "tax_withheld": "1000",
+             "net": "182000"}])
+    # Each portfolio's receivable clears; gross, fees, tax and cash follow item ownership (120:80).
+    assert (_gl("1110", portfolio_id=pc), _gl("1110", portfolio_id=pb)) == (0, 0)
+    assert (_gl("5300", portfolio_id=pc), _gl("5300", portfolio_id=pb)) == (D("10200"), D("6800"))
+    assert (_gl("1400", portfolio_id=pc), _gl("1400", portfolio_id=pb)) == (D("600"), D("400"))
+    assert (_cash_like(order_id=oid, portfolio_id=pc), _cash_like(order_id=oid, portfolio_id=pb)) == \
+        (D("109200"), D("72800"))
+    assert _cash_like(order_id=oid) == D("182000")
+    with owner_session() as s:
+        item = s.execute(text("select status, difference, portfolio_id from reconciliation_items "
+                              "where kind = 'marketplace' and expected_ref = :o"), {"o": str(oid)}).one()
+    # The 1,000 fee above the accrual is booked (true-up) and surfaces for review; the item is org-level.
+    assert (item.status, D(item.difference), item.portfolio_id) == ("variance", D("-1000"), None)
+    assert_balanced(tenant)
+
+
+def test_B4_two_lines_for_one_order_in_one_payout_are_both_settled(tenant):
+    from app.modules import settlements
+
+    w = build_world(tenant)
+    _multi_portfolio_marketplace_order(tenant, w, "SHP-MP-2")
+    fin = principal(tenant, "finance")
+    with tenant_session(tenant.org_id, fin.user_id) as s:
+        settlements.marketplace_payout(s, fin, w.shopee_seller, "PAYOUT-MP-2", [
+            {"external_order_id": "SHP-MP-2", "gross": "200000", "fee": "17000", "tax_withheld": "1000",
+             "net": "182000"},
+            {"external_order_id": "SHP-MP-2", "gross": "0", "fee": "500", "tax_withheld": "0", "net": "-500"}])
+    assert _gl("5300", platform_account_id=w.shopee_seller) == D("17500")
+    assert _gl("1000", platform_account_id=w.shopee_seller) + _gl("1050", platform_account_id=w.shopee_seller) \
+        == D("181500")
+    assert _gl("1110", platform_account_id=w.shopee_seller) == 0
+    assert_balanced(tenant)
+
+
+# --- B5 verified bank cash -------------------------------------------------------------------------------------
+
+
+def _bank(t, legal_entity_id) -> uuid.UUID:
+    from app.models.org import BankAccount
+
+    with owner_session() as s:
+        ba = BankAccount(organization_id=t.org_id, legal_entity_id=legal_entity_id, provider="bank",
+                         institution="BCA", account_ref=f"BCA-{uuid.uuid4().hex[:8]}")
+        s.add(ba)
+        s.flush()
+        return ba.id
+
+
+def _import_and_match(t, bank_account_id, amount: D, reference: str, batch: str) -> tuple[int, int]:
+    from app.modules import payments
+
+    fin = principal(t, "finance")
+    with tenant_session(t.org_id, fin.user_id) as s:
+        n = payments.import_bank_statement(s, fin, bank_account_id, [
+            {"booked_at": utcnow().date(), "amount": amount, "reference": reference}], batch=batch)
+        return n, payments.match_bank_lines(s, fin)
+
+
+def test_B5_provider_payout_is_not_verified_cash_until_a_bank_line_of_the_same_entity_proves_it(tenant):
+    from app.models.orders import Payment
+    from app.models.org import LegalEntity
+    from app.modules import settlements
+    from app.modules.fpa import cash
+
+    w = build_world(tenant)
+    oid = _order(tenant, w, [("A1", 1, "0")])
+    _pay_gateway(tenant, oid)
+    dispatch_due()
+    with owner_session() as s:
+        pid, amount = s.execute(select(Payment.id, Payment.amount).where(Payment.order_id == oid)).one()
+        other = LegalEntity(organization_id=tenant.org_id, name="Second PT")
+        s.add(other)
+        s.flush()
+        other_le = other.id
+    fin = principal(tenant, "finance")
+    cash_before = _gl("1000", organization_id=tenant.org_id)
+    with tenant_session(tenant.org_id, fin.user_id) as s:
+        opening_before = D(cash.forecast_13w(s, tenant.legal_entity_id)["opening_cash"])
+        settlements.gateway_disbursement(s, fin, w.wa_account, "DOKU-PAYOUT-B5", [(pid, amount)])
+    # Reported, not received: verified cash and the forecast's opening cash are unchanged.
+    assert _gl("1000", organization_id=tenant.org_id) == cash_before
+    assert _gl("1050", organization_id=tenant.org_id) == amount
+    with tenant_session(tenant.org_id, fin.user_id) as s:
+        f = cash.forecast_13w(s, tenant.legal_entity_id)
+        assert D(f["opening_cash"]) == opening_before and D(f["funds_in_transit_unverified"]) == amount
+    # A bank line of ANOTHER legal entity with the same reference and amount proves nothing.
+    assert _import_and_match(tenant, _bank(tenant, other_le), amount, "DOKU DOKU-PAYOUT-B5", "x1") == (1, 0)
+    assert _gl("1000", organization_id=tenant.org_id) == cash_before
+    # The entity's own bank line proves receipt: 1050 → 1000.
+    own = _bank(tenant, tenant.legal_entity_id)
+    assert _import_and_match(tenant, own, amount, "DOKU DOKU-PAYOUT-B5", "b1") == (1, 1)
+    assert _gl("1000", organization_id=tenant.org_id) == cash_before + amount
+    assert _gl("1050", organization_id=tenant.org_id) == 0
+    # Re-importing the same statement is idempotent and matches nothing new.
+    assert _import_and_match(tenant, own, amount, "DOKU DOKU-PAYOUT-B5", "b1") == (0, 0)
+    assert _gl("1000", organization_id=tenant.org_id) == cash_before + amount
+    assert_balanced(tenant)
+
+
+def test_B5_unmatched_payout_ages_into_a_bank_unmatched_case(tenant):
+    from app.models.orders import Payment
+    from app.modules import reconciliation, settlements
+
+    w = build_world(tenant)
+    oid = _order(tenant, w, [("A1", 1, "0")])
+    _pay_gateway(tenant, oid)
+    with owner_session() as s:
+        pid, amount = s.execute(select(Payment.id, Payment.amount).where(Payment.order_id == oid)).one()
+    fin = principal(tenant, "finance")
+    with tenant_session(tenant.org_id, fin.user_id) as s:
+        settlements.gateway_disbursement(s, fin, w.wa_account, "DOKU-PAYOUT-LATE", [(pid, amount)])
+    with tenant_session(tenant.org_id, fin.user_id) as s:
+        aged = reconciliation.age(s, today=utcnow().date() + timedelta(days=5))
+        assert any(i.kind == "bank_payout" for i in aged)
+    with owner_session() as s:
+        case = s.execute(text("select type, exposure from exception_cases where organization_id = :o "
+                              "and type = 'bank_unmatched'"), {"o": tenant.org_id}).one()
+    assert D(case.exposure) == amount

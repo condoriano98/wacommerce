@@ -27,6 +27,8 @@ from app.modules.finance import accounts as A
 from app.modules.finance.ledger import ZERO, JournalLine, journal_exists, post_journal
 
 CENT = Decimal("0.01")
+# Provider payouts are debited here until a bank statement line proves receipt (remediation B5, ``bank_receipt``).
+PAYOUT_ACCOUNT = A.FUNDS_IN_TRANSIT
 
 
 def q(v: Decimal) -> Decimal:
@@ -180,10 +182,11 @@ def gateway_fee(session: Session, order: Order, payment: Payment, fee: Decimal) 
 
 def gateway_disbursement(session: Session, org_id, legal_entity_id, settlement_id: str, gross: Decimal,
                          unbooked_fee: Decimal, platform_account_id=None) -> None:
-    """Gateway pays out: Dr bank net (+ fee not yet booked) / Cr 1010 gross."""
+    """Gateway reports a payout: Dr funds in transit (net) + fee not yet booked / Cr 1010 gross. Verified cash moves
+    only when the bank statement line is matched (``bank_receipt``)."""
     kw = {"platform_account_id": platform_account_id}
     _post(session, org_id, legal_entity_id, "gateway_disbursement", settlement_id, [
-        JournalLine(A.CASH, debit=gross - unbooked_fee, **kw),
+        JournalLine(PAYOUT_ACCOUNT, debit=gross - unbooked_fee, **kw),
         JournalLine(A.PAYMENT_FEES, debit=unbooked_fee, **kw),
         JournalLine(A.GATEWAY_CLEARING, credit=gross, **kw)])
 
@@ -287,8 +290,8 @@ def cod_carrier_cost_reclass(session: Session, order: Order, shipment_id: str, a
 
 def cod_remitted(session: Session, org_id, legal_entity_id, source_id: str, by_portfolio: dict, carrier_account_id,
                  to_bank: bool = False) -> None:
-    """Carrier remits collected COD: Dr carrier balance (or bank) / Cr COD receivable."""
-    debit = A.CASH if to_bank else A.CARRIER_BALANCE
+    """Carrier remits collected COD: Dr carrier balance (or funds in transit to bank) / Cr COD receivable."""
+    debit = PAYOUT_ACCOUNT if to_bank else A.CARRIER_BALANCE
     lines = []
     for pid, amount in by_portfolio.items():
         kw = {"portfolio_id": pid, "platform_account_id": carrier_account_id}
@@ -300,21 +303,67 @@ def carrier_withdrawal(session: Session, org_id, legal_entity_id, source_id: str
                        carrier_account_id) -> None:
     kw = {"platform_account_id": carrier_account_id}
     _post(session, org_id, legal_entity_id, "carrier_withdrawal", source_id, [
-        JournalLine(A.CASH, debit=gross - fee, **kw), JournalLine(A.PAYMENT_FEES, debit=fee, **kw),
+        JournalLine(PAYOUT_ACCOUNT, debit=gross - fee, **kw), JournalLine(A.PAYMENT_FEES, debit=fee, **kw),
         JournalLine(A.CARRIER_BALANCE, credit=gross, **kw)])
 
 
-def marketplace_settled(session: Session, org_id, legal_entity_id, source_id: str, *, receivable_cleared: Decimal,
-                        net_paid: Decimal, fee_true_up: Decimal, withheld_tax: Decimal, portfolio_id,
-                        platform_account_id) -> None:
-    kw = {"portfolio_id": portfolio_id, "platform_account_id": platform_account_id}
-    lines = [JournalLine(A.CASH, debit=net_paid, **kw), JournalLine(A.PREPAID_TAX, debit=withheld_tax, **kw),
-             JournalLine(A.MARKETPLACE_RECEIVABLE, credit=receivable_cleared, **kw)]
-    if fee_true_up >= 0:
-        lines.append(JournalLine(A.MARKETPLACE_FEES, debit=fee_true_up, **kw))
-    else:
-        lines.append(JournalLine(A.MARKETPLACE_FEES, credit=-fee_true_up, **kw))
-    _post(session, org_id, legal_entity_id, "marketplace_settled", source_id, lines)
+@dataclass
+class MarketplaceItemSettlement:
+    item: OrderItem
+    net_paid: Decimal
+    withheld_tax: Decimal
+    fee_true_up: Decimal  # actual fee share - accrued expected fee (negative = over-accrued)
+
+
+def marketplace_settled(session: Session, order: Order, source_id: str, items: list[MarketplaceItemSettlement], *,
+                        platform_account_id) -> Decimal:
+    """Marketplace payout for one order, one journal with lines per order item (and so per portfolio): Dr payout
+    (cash account per the payout policy) + Dr 1400 withheld tax ± 5300 fee true-up / Cr 1110 for what the payout
+    explains. Returns the receivable amount explained (for reconciliation)."""
+    lines, explained = [], ZERO
+    for a in items:
+        kw = {"portfolio_id": a.item.portfolio_id, "order_id": order.id, "order_item_id": a.item.id,
+              "platform_account_id": platform_account_id}
+        cleared = a.net_paid + a.withheld_tax + a.fee_true_up
+        explained += cleared
+        if a.net_paid >= 0:
+            lines.append(JournalLine(PAYOUT_ACCOUNT, debit=a.net_paid, **kw))
+        else:
+            lines.append(JournalLine(PAYOUT_ACCOUNT, credit=-a.net_paid, **kw))
+        lines.append(JournalLine(A.PREPAID_TAX, debit=a.withheld_tax, **kw))
+        if a.fee_true_up >= 0:
+            lines.append(JournalLine(A.MARKETPLACE_FEES, debit=a.fee_true_up, **kw))
+        else:
+            lines.append(JournalLine(A.MARKETPLACE_FEES, credit=-a.fee_true_up, **kw))
+        if cleared >= 0:
+            lines.append(JournalLine(A.MARKETPLACE_RECEIVABLE, credit=cleared, **kw))
+        else:
+            lines.append(JournalLine(A.MARKETPLACE_RECEIVABLE, debit=-cleared, **kw))
+    _post(session, order.organization_id, entity_for_order(session, order), "marketplace_settled", source_id, lines)
+    return explained
+
+
+def bank_receipt(session: Session, org_id, legal_entity_id, bank_line_id: str, sources: list[tuple[str, str]]) -> None:
+    """A bank statement line proves a provider payout: Dr 1000 / Cr 1050 in exactly the dimensions (portfolio, order,
+    platform account) the payout was booked with, so every portfolio's funds in transit clear."""
+    from sqlalchemy import and_, func, or_
+
+    rows = session.execute(select(LedgerEntry.portfolio_id, LedgerEntry.order_id, LedgerEntry.order_item_id,
+                                  LedgerEntry.platform_account_id,
+                                  func.sum(LedgerEntry.debit - LedgerEntry.credit)).where(
+        LedgerEntry.account_code == A.FUNDS_IN_TRANSIT,
+        or_(*[and_(LedgerEntry.source_type == st, LedgerEntry.source_id == sid) for st, sid in sources]))
+        .group_by(LedgerEntry.portfolio_id, LedgerEntry.order_id, LedgerEntry.order_item_id,
+                  LedgerEntry.platform_account_id)).all()
+    lines = []
+    for pid, oid, iid, acc, amount in rows:
+        kw = {"portfolio_id": pid, "order_id": oid, "order_item_id": iid, "platform_account_id": acc}
+        amount = Decimal(amount)
+        if amount > 0:
+            lines += [JournalLine(A.CASH, debit=amount, **kw), JournalLine(A.FUNDS_IN_TRANSIT, credit=amount, **kw)]
+        elif amount < 0:
+            lines += [JournalLine(A.FUNDS_IN_TRANSIT, debit=-amount, **kw), JournalLine(A.CASH, credit=-amount, **kw)]
+    _post(session, org_id, legal_entity_id, "bank_receipt", bank_line_id, lines)
 
 
 # --- procurement ----------------------------------------------------------------------------------------------
@@ -336,7 +385,7 @@ def supplier_canceled(session: Session, order: Order, source_id: str, amount: De
 def supplier_refunded(session: Session, order: Order, source_id: str, amount: Decimal, portfolio_id) -> None:
     kw = {"portfolio_id": portfolio_id, "order_id": order.id}
     _post(session, order.organization_id, entity_for_order(session, order), "supplier_refunded", source_id, [
-        JournalLine(A.CASH, debit=amount, **kw), JournalLine(A.SUPPLIER_REFUND_RECEIVABLE, credit=amount, **kw)])
+        JournalLine(PAYOUT_ACCOUNT, debit=amount, **kw), JournalLine(A.SUPPLIER_REFUND_RECEIVABLE, credit=amount, **kw)])
 
 
 # --- cancellations, refunds, returns --------------------------------------------------------------------------

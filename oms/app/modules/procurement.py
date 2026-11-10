@@ -184,5 +184,10 @@ def supplier_canceled_purchase(session: Session, principal: Principal, purchase_
 def supplier_refund_received(session: Session, principal: Principal, purchase_id: uuid.UUID) -> None:
     purchase = session.get(ExternalPurchase, purchase_id)
     principal.require("procurement.operate", purchase.portfolio_id)
-    posting.supplier_refunded(session, session.get(Order, purchase.order_id), str(purchase.id), purchase.amount_paid,
-                              purchase.portfolio_id)
+    order = session.get(Order, purchase.order_id)
+    posting.supplier_refunded(session, order, str(purchase.id), purchase.amount_paid, purchase.portfolio_id)
+    from app.modules.settlements import expect_bank_receipt
+
+    expect_bank_receipt(session, principal.org_id, posting.entity_for_order(session, order), "supplier_refund",
+                        purchase.external_order_id, purchase.amount_paid, [("supplier_refunded", str(purchase.id))],
+                        portfolio_id=purchase.portfolio_id)

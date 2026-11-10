@@ -39,6 +39,17 @@ def _settlement(session: Session, org_id, account_id, kind: str, external_id: st
     return s, True
 
 
+def expect_bank_receipt(session: Session, org_id, legal_entity_id, kind: str, token: str, amount: Decimal,
+                        sources: list[tuple[str, str]], portfolio_id=None) -> None:
+    """A provider reported a payout (booked to 1050). It becomes verified cash only when a bank statement line of the
+    same legal entity, carrying ``token`` in its reference and the exact amount, is matched (remediation B5)."""
+    if amount <= 0:
+        return
+    reconciliation.expect(session, org_id, "bank_payout", f"{kind}:{token}", amount, portfolio_id=portfolio_id,
+                          evidence={"token": token, "legal_entity_id": str(legal_entity_id) if legal_entity_id else None,
+                                    "sources": [list(x) for x in sources]})
+
+
 def gateway_disbursement(session: Session, principal: Principal, account_id, external_id: str,
                          payments: list[tuple[uuid.UUID, Decimal]]) -> Settlement:
     """payments: [(payment_id, net amount received for it)]."""
@@ -59,8 +70,11 @@ def gateway_disbursement(session: Session, principal: Principal, account_id, ext
     first = session.get(Order, session.get(Payment, payments[0][0]).order_id)
     total_net = sum((n for _, n in payments), Decimal("0"))
     # 1010 holds amount − fees already booked; it is cleared by net received + fees not yet booked (F1, F9).
-    posting.gateway_disbursement(session, principal.org_id, posting.entity_for_order(session, first), str(s.id),
+    le = posting.entity_for_order(session, first)
+    posting.gateway_disbursement(session, principal.org_id, le, str(s.id),
                                  total_net + fees_unbooked, fees_unbooked, platform_account_id=account_id)
+    expect_bank_receipt(session, principal.org_id, le, "gateway", external_id, total_net,
+                        [("gateway_disbursement", str(s.id))])
     for pid, net in payments:
         p = session.get(Payment, pid)
         if p.status == "captured":
@@ -102,12 +116,21 @@ def carrier_withdrawal(session: Session, principal: Principal, carrier_account_i
     principal.require("finance.manage")
     posting.carrier_withdrawal(session, principal.org_id, legal_entity_id, withdrawal_id, gross, fee,
                                carrier_account_id)
+    expect_bank_receipt(session, principal.org_id, legal_entity_id, "carrier_withdrawal", withdrawal_id, gross - fee,
+                        [("carrier_withdrawal", withdrawal_id)])
 
 
 def marketplace_payout(session: Session, principal: Principal, account_id, payout_id: str,
                        lines: list[dict]) -> Settlement:
     """lines (normalized by the marketplace adapter or CSV import): {external_order_id, gross, fee, tax_withheld,
-    net}. Fee true-up = actual fee - accrued expected fee."""
+    net}. Lines are aggregated per order, then allocated to the order's items (remediation B4):
+
+    * each item's actual fee, withheld tax and payout are its pro-rata share of the order totals by item gross
+      (``posting.split``: deterministic, rounding remainder on the last item);
+    * fee true-up per item = actual fee share - fee accrued for that item at delivery;
+    * the marketplace receivable of each item is credited with what the payout explains for it;
+    * reconciliation compares the value received (payout + withheld tax) with the receivable expected at delivery,
+      so fee overcharges and short payouts open a case; nothing is pushed to another portfolio."""
     principal.require("finance.manage")
     gross = sum((Decimal(str(ln["gross"])) for ln in lines), Decimal("0"))
     fees = sum((Decimal(str(ln["fee"])) for ln in lines), Decimal("0"))
@@ -115,30 +138,48 @@ def marketplace_payout(session: Session, principal: Principal, account_id, payou
     s, new = _settlement(session, principal.org_id, account_id, "marketplace_payout", payout_id, gross, fees, net)
     if not new:
         return s
+    by_order: dict[str, dict[str, Decimal]] = {}
+    sources, paid, le = [], Decimal("0"), None
     for ln in lines:
+        agg = by_order.setdefault(ln["external_order_id"], {k: Decimal("0") for k in ("gross", "fee", "tax", "net")})
+        agg["gross"] += Decimal(str(ln["gross"]))
+        agg["fee"] += Decimal(str(ln["fee"]))
+        agg["tax"] += Decimal(str(ln.get("tax_withheld", 0)))
+        agg["net"] += Decimal(str(ln["net"]))
+    for ext, agg in by_order.items():
         order = session.scalars(select(Order).where(Order.platform_account_id == account_id,
-                                                    Order.external_order_id == ln["external_order_id"])).first()
+                                                    Order.external_order_id == ext)).first()
         if order is None:
             exceptions.open_case(session, principal.org_id, "marketplace_settlement_mismatch",
-                                 subject_type="settlement", subject_id=f"{s.id}:{ln['external_order_id']}",
+                                 subject_type="settlement", subject_id=f"{s.id}:{ext}",
                                  context={"reason": "settlement line for unknown order"})
             continue
-        item = orders.items_of(session, order.id)[0]
-        accrued = Decimal(session.scalar(select(func.coalesce(func.sum(LedgerEntry.debit), 0)).where(
-            LedgerEntry.order_id == order.id, LedgerEntry.source_type == "marketplace_fee_accrual")))
-        receivable = Decimal(str(ln["gross"])) - accrued
-        posting.marketplace_settled(
-            session, principal.org_id, posting.entity_for_order(session, order), f"{s.id}:{order.id}",
-            receivable_cleared=receivable, net_paid=Decimal(str(ln["net"])),
-            fee_true_up=Decimal(str(ln["fee"])) - accrued, withheld_tax=Decimal(str(ln.get("tax_withheld", 0))),
-            portfolio_id=item.portfolio_id, platform_account_id=account_id)
+        items = orders.items_of(session, order.id)
+        weights = [i.line_total for i in items]
+        shares = {k: posting.split(agg[k], weights) for k in ("fee", "tax", "net")}
+        allocations = []
+        for n, item in enumerate(items):
+            accrued = Decimal(session.scalar(select(func.coalesce(func.sum(LedgerEntry.debit), 0)).where(
+                LedgerEntry.order_item_id == item.id, LedgerEntry.source_type == "marketplace_fee_accrual")))
+            allocations.append(posting.MarketplaceItemSettlement(
+                item=item, net_paid=shares["net"][n], withheld_tax=shares["tax"][n],
+                fee_true_up=shares["fee"][n] - accrued))
+        posting.marketplace_settled(session, order, f"{s.id}:{order.id}", allocations,
+                                    platform_account_id=account_id)
+        sources.append(("marketplace_settled", f"{s.id}:{order.id}"))
+        paid += agg["net"]
+        le = le or posting.entity_for_order(session, order)
         session.add(SettlementLine(organization_id=principal.org_id, settlement_id=s.id, platform_account_id=account_id,
-                                   order_id=order.id, external_order_id=ln["external_order_id"], line_type="sale",
-                                   amount=Decimal(str(ln["net"]))))
+                                   order_id=order.id, external_order_id=ext, line_type="sale", amount=agg["net"]))
+        # Value received (payout + creditable withholding) vs the receivable expected at delivery: a fee above the
+        # accrual is booked (true-up) and also surfaces as a variance case for review.
         reconciliation.match(session, "marketplace", str(order.id), actual_ref=str(s.id),
-                             actual_amount=Decimal(str(ln["net"])), evidence={"payout": payout_id})
+                             actual_amount=agg["net"] + agg["tax"],
+                             evidence={"payout": payout_id, "net": str(agg["net"]), "fee": str(agg["fee"]),
+                                       "tax_withheld": str(agg["tax"])})
         order.settlement_status = "settled"
         orders.derive_status(session, order)
+    expect_bank_receipt(session, principal.org_id, le, "marketplace", payout_id, paid, sources)
     return s
 
 
@@ -157,8 +198,11 @@ def _expect_settlement(session: Session, data: dict) -> None:
         expected = Decimal(session.scalar(select(func.coalesce(func.sum(LedgerEntry.debit - LedgerEntry.credit), 0))
                                           .where(LedgerEntry.order_id == order.id,
                                                  LedgerEntry.account_code == A.MARKETPLACE_RECEIVABLE)))
+        portfolios = {i.portfolio_id for i in orders.items_of(session, order.id)}
+        # A multi-portfolio order's settlement is an org-level reconciliation item (not one portfolio's).
         reconciliation.expect(session, order.organization_id, "marketplace", str(order.id), expected,
-                              portfolio_id=g.portfolio_id)
+                              portfolio_id=g.portfolio_id if len(portfolios) == 1 else None)
+        reconciliation.raise_expectation(session, "marketplace", str(order.id), expected)
 
 
 # --- refunds and returns ----------------------------------------------------------------------------------------

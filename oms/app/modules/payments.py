@@ -231,6 +231,36 @@ def match_bank_lines(session: Session, principal: Principal) -> int:
             events.emit(session, "payment_released", order=order, payment=hit, basis="bank_matched")
         orders.derive_status(session, order)
         matched += 1
+    matched += _match_payout_receipts(session, principal, [ln for ln in lines if ln.matched_id is None])
+    return matched
+
+
+def _match_payout_receipts(session: Session, principal: Principal, lines: list[BankStatementLine]) -> int:
+    """Provider payouts (gateway, carrier withdrawal, marketplace, supplier refund) become verified cash only here:
+    a bank credit of the same legal entity, with the payout token in its reference and the exact amount
+    (remediation B5). Each line matches at most one payout; each payout is matched once."""
+    from app.models.finance import ReconciliationItem
+    from app.models.org import BankAccount
+
+    matched = 0
+    for line in lines:
+        ba = session.get(BankAccount, line.bank_account_id)
+        ref = (line.reference or "").upper()
+        cands = session.scalars(select(ReconciliationItem).where(
+            ReconciliationItem.kind == "bank_payout", ReconciliationItem.status == "open",
+            ReconciliationItem.expected_amount == line.amount).with_for_update()).all()
+        hit = next((c for c in cands if (c.evidence.get("token") or "~").upper() in ref
+                    and c.evidence.get("legal_entity_id") == (str(ba.legal_entity_id) if ba.legal_entity_id else None)),
+                   None)
+        if hit is None:
+            continue
+        posting.bank_receipt(session, principal.org_id, ba.legal_entity_id, str(line.id),
+                             [tuple(x) for x in hit.evidence.get("sources", [])])
+        line.matched_type, line.matched_id = "payout", str(hit.id)
+        reconciliation.match(session, "bank_payout", hit.expected_ref, actual_ref=str(line.id),
+                             actual_amount=line.amount, evidence={"bank_line": str(line.id)},
+                             operator_user_id=principal.user_id)
+        matched += 1
     return matched
 
 

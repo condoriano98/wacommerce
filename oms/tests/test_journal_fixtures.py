@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 FIXTURES = yaml.safe_load((Path(__file__).parents[2] / "docs" / "fixtures" / "journals.yaml").read_text())["fixtures"]
-CLEARING = {"1250", "2200", "1010", "1100", "1110", "1020", "1105", "1120"}
+CLEARING = {"1250", "2200", "1010", "1050", "1100", "1110", "1020", "1105", "1120"}
 
 
 @pytest.mark.parametrize("name", sorted(FIXTURES))

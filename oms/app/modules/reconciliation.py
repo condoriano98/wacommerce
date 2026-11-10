@@ -23,18 +23,29 @@ SLA = {
     "cod": (7, "cod_not_remitted"),
     "marketplace": (14, "marketplace_settlement_mismatch"),
     "supplier_refund": (14, "supplier_canceled"),
+    "bank_payout": (3, "bank_unmatched"),  # provider-reported payout awaiting a bank statement line (B5)
 }
 TOLERANCE = Decimal("0.00")
 
 
 def expect(session: Session, org_id, kind: str, ref: str, amount: Decimal, *, portfolio_id=None,
-           expected_at: date | None = None) -> None:
+           expected_at: date | None = None, evidence: dict | None = None) -> None:
     import uuid
 
     session.execute(insert(ReconciliationItem).values(
         id=uuid.uuid4(), created_at=utcnow(), organization_id=org_id, portfolio_id=portfolio_id, kind=kind,
         expected_ref=ref, expected_amount=amount, expected_at=expected_at or utcnow().date(), status="open",
-        evidence={}).on_conflict_do_nothing(index_elements=["kind", "expected_ref"]))
+        evidence=evidence or {}).on_conflict_do_nothing(index_elements=["kind", "expected_ref"]))
+
+
+def raise_expectation(session: Session, kind: str, ref: str, amount: Decimal) -> None:
+    """An open expectation grows when more of the same subject becomes due (e.g. a later partial delivery of a
+    marketplace order adds to its receivable). Matched or variance items are never rewritten."""
+    item = session.scalars(select(ReconciliationItem).where(
+        ReconciliationItem.kind == kind, ReconciliationItem.expected_ref == ref,
+        ReconciliationItem.status == "open").with_for_update()).first()
+    if item is not None:
+        item.expected_amount = amount
 
 
 def match(session: Session, kind: str, ref: str, *, actual_ref: str, actual_amount: Decimal, evidence: dict,

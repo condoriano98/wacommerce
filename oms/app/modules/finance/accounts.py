@@ -4,6 +4,8 @@
 ACCOUNTS: dict[str, tuple[str, str, bool, bool]] = {
     "1000": ("Cash and bank", "asset", True, False),
     "1010": ("Payment gateway clearing", "asset", False, True),
+    # Provider-reported payouts not yet proven by a bank statement line; never part of verified cash (remediation B5).
+    "1050": ("Funds in transit to bank (unverified payouts)", "asset", False, True),
     "1020": ("Carrier balance (Biteship)", "asset", False, True),
     "1030": ("Prepaid ad balances", "asset", False, True),
     "1100": ("COD receivable (courier)", "asset", False, True),
@@ -46,6 +48,7 @@ INACTIVE = {"1300", "3100"}
 
 CASH = "1000"
 GATEWAY_CLEARING = "1010"
+FUNDS_IN_TRANSIT = "1050"
 CARRIER_BALANCE = "1020"
 PREPAID_ADS = "1030"
 COD_RECEIVABLE = "1100"

@@ -145,6 +145,7 @@ def test_F1_prepaid_whatsapp_doku(tenant):
     with tenant_session(tenant.org_id, fin.user_id) as s:
         pid = s.scalars(select(Payment.id).where(Payment.order_id == oid)).one()
         settlements.gateway_disbursement(s, fin, w.wa_account, "DOKU-PAYOUT-1", [(pid, D("203565"))])
+    _bank_receipt(tenant, "DOKU-PAYOUT-1", "203565")
     assert_fixture("F1_prepaid_whatsapp_doku", led.produced())
     assert_balanced(tenant)
     with tenant_session(tenant.org_id, fin.user_id) as s:
@@ -170,6 +171,7 @@ def test_F2_cod_revenue_recognised_before_remittance(tenant):
         settlements.cod_remittance(s, fin, w.wa_account, "COD-RPT-1", [{"shipment_external_id": ext,
                                                                           "amount_remitted": "148050"}])
         settlements.carrier_withdrawal(s, fin, w.wa_account, "WD-1", D("148050"), D("2500"), tenant.legal_entity_id)
+    _bank_receipt(tenant, "WD-1", "145550")
     assert_fixture("F2_cod_biteship", led.produced())
     assert_balanced(tenant)
 
@@ -180,6 +182,16 @@ def _bank_account(t):
                          institution="BCA", account_ref=f"123-{uuid.uuid4().hex[:6]}")
         s.add(ba)
     return ba.id
+
+
+def _bank_receipt(t, reference: str, amount) -> None:
+    """The bank statement proves a provider payout (remediation B5): 1050 → 1000."""
+    fin = principal(t, "finance")
+    ba = _bank_account(t)
+    with tenant_session(t.org_id, fin.user_id) as s:
+        payments.import_bank_statement(s, fin, ba, [{"booked_at": utcnow().date(), "amount": D(str(amount)),
+                                                     "reference": f"TRF {reference}"}], batch=f"r-{reference}")
+        assert payments.match_bank_lines(s, fin) == 1
 
 
 def _manual_pay(t, oid, *, match: bool):
@@ -256,6 +268,7 @@ def test_F4_marketplace_receivable_and_settlement(tenant):
     with tenant_session(tenant.org_id, fin.user_id) as s:
         settlements.marketplace_payout(s, fin, w.shopee_seller, "PAYOUT-1", [
             {"external_order_id": "SHP-F4", "gross": "240000", "fee": "20000", "tax_withheld": "1200", "net": "218800"}])
+    _bank_receipt(tenant, "PAYOUT-1", "218800")
     assert_fixture("F4_marketplace_shopee", led.produced())
     assert_balanced(tenant)
 
@@ -361,6 +374,7 @@ def test_F9_fee_deducted_at_disbursement(tenant):
     with tenant_session(tenant.org_id, fin.user_id) as s:
         pid = s.scalars(select(Payment.id).where(Payment.order_id == oid)).one()
         settlements.gateway_disbursement(s, fin, w.wa_account, "DOKU-PAYOUT-9", [(pid, D("203565"))])
+    _bank_receipt(tenant, "DOKU-PAYOUT-9", "203565")
     assert_fixture("F9_settlement_fee_deduction", led.produced())
 
 
@@ -391,6 +405,10 @@ def test_F11_supplier_cancellation(tenant):
         procurement.supplier_refund_received(s, proc, purchase_id)
         item = s.scalars(select(OrderItem).where(OrderItem.order_id == oid)).one()
         assert item.qty_procured == 0  # trigger decremented
+        from app.models.fulfillment import ExternalPurchase
+
+        ext = s.get(ExternalPurchase, purchase_id).external_order_id
+    _bank_receipt(tenant, ext, "100000")
     assert_fixture("F11_supplier_cancellation", led.produced())
 
 
