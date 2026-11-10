@@ -39,15 +39,53 @@ Functional status and external-verification status are reported separately (spec
 ### Verification gates
 | Gate | State | Evidence |
 |---|---|---|
-| Journal fixtures F1–F13 | **Implemented & tested** (sanity) | `oms/tests/test_journal_fixtures.py` (35 tests); service-level proof = acceptance #19 (M1) |
-| G-DOKU, G-BS1–4, G-CW1 | Open — research in progress | to be recorded in `docs/04` with source + date |
-| G-PROC | Open — verified by M1 worker tests | — |
-| G-MB1 | **Unverified** until reporting-role isolation tests (#20) pass | — |
-| G-ACC1, G-TAX1 | Open — accountant decision | defaults configurable |
-| G-GOV1 | Open — needs second approver or delegation policy | — |
-| G-OPS1, G-OPS2 | Open — Sumopod confirmation | — |
+| Journal fixtures F1–F13 | **Implemented & tested** — YAML sanity (35) and real services against PostgreSQL (#19, 15 tests) | `oms/tests/test_journal_fixtures.py`, `oms/tests/test_accounting_services.py` |
+| G-DOKU | **Documentation-verified 2026-11-10, not sandbox-verified**; `invoice_number` uniqueness unverified | `docs/04` DOKU row (sources linked) |
+| G-BS1 / G-BS2 / G-BS3 | Open: COD remittance dashboard/CSV only; webhook auth unverified; billing per account (Topup/Invoice) | `docs/04` Biteship row |
+| G-BS4 | **Closed (negative)**: no lookup by `reference_id` → uncertain bookings go to human reconciliation (ADR-015) | Biteship retrieve docs |
+| G-CW1 | **Documentation/source-verified, not instance-verified**: API-created messages echo to `webhook_url`; suppress by `source_id`/sender | `docs/04` Chatwoot row |
+| G-PROC | **Verified locally** with procrastinate 3.10.0: async worker, periodic tasks, `queueing_lock`/`lock`, heartbeat-based stalled recovery | `oms/tests/test_worker.py` (4 tests), local `python -m app.worker` smoke run |
+| G-MB1 | **PostgreSQL isolation verified locally** (session_user identity; `set_config`/`SET ROLE` spoofing rejected; base tables inaccessible); Metabase instance configuration **unverified** | `test_m1_acceptance.py::test_20_reporting_role_identity_cannot_be_spoofed` |
+| G-ACC1, G-TAX1 | Open: accountant decision | defaults configurable |
+| G-GOV1 | Open: needs a second approver or a delegation policy | — |
+| G-OPS1, G-OPS2 | Open: needs Sumopod confirmation | — |
+
+## M1 — Financially correct OMS core
+
+### Acceptance-test ownership → evidence (all against PostgreSQL 16 with RLS roles)
+| # | Test |
+|---|---|
+| 1, 2 | `test_m1_acceptance.py::test_1_2_multi_portfolio_split_fulfilment_partial_return_and_refund` |
+| 3 | `test_accounting_services.py::test_F2_cod_revenue_recognised_before_remittance` |
+| 4 | `test_accounting_services.py::test_F1_prepaid_whatsapp_doku` |
+| 7 | `test_m1_acceptance.py::test_7_isolation_across_app_worker_webhook_roles_and_sql`; `test_foundation.py` RLS tests |
+| 8 | `test_m1_acceptance.py::test_8_concurrent_purchases_cannot_over_procure` (separate connections, thread barrier) |
+| 9 | `test_m1_acceptance.py::test_9_concurrent_reservations_never_oversell` |
+| 11a | `test_m1_acceptance.py::test_11a_unmatched_attested_payment_ages_into_exception_with_exposure` |
+| 13a | `test_m1_acceptance.py::test_13a_closed_period_is_immutable_and_corrections_are_adjustments` |
+| 16 | `test_foundation.py::test_approval_separation_of_duties_and_capital_reallocation_without_cash` |
+| 17 | `test_m1_acceptance.py::test_17_consolidation_eliminates_intercompany_and_inter_portfolio` |
+| 19 | `test_accounting_services.py::test_F1…test_F13_*` (15) |
+| 20 | `test_m1_acceptance.py::test_20_partial_visibility_…`, `::test_20_reporting_role_identity_cannot_be_spoofed` |
+| Jobs | `test_worker.py` (relay dedupe, stalled-worker recovery, failure recorded with backoff, API role has no queue access) |
+
+### Migrations (forward-only; 0001–0003 history preserved)
+`0004_v31_expand` (tables/columns/CHECKs) · `0005_v31_security` (oms_worker/oms_webhook/reporting roles alongside legacy
+`oms_system`, definer resolvers, rewritten policies, composite tenant FKs, `order_slices`) · `0006_v31_data` (CoA incl.
+1105/1109/5700, legal entities, identity domains, system principals) · `0007_v31_reporting` (reporting views,
+`provision_reporting_principal`) · `0008_procrastinate` (queue in schema `procrastinate`, `oms_worker` only, pinned
+function `search_path`). The contract migration (drop `oms_system`, superseded columns) is **not** written yet. It
+belongs to a later release, after both role modes have run in staging (ADR-014).
+
+### Known limitations carried into M2
+- Provider adapters (DOKU, Biteship, Meta, Chatwoot) are not built; `external_operations` table exists but no adapter
+  uses it yet. Test #6, the worker kill after an uncertain provider response, is owned by M2.
+- No dead-letter review HTTP endpoint yet (`requeue_dead_letter` service exists). The endpoint and metrics are planned for M2/M5.
+- `OMS_DB_ROLE_MODE=legacy` path kept for cutover. CI runs `v31` only.
 
 ## Milestone log
 | Milestone | Commit | CI | Local tests (pass/fail/skip) | Functional | External verification |
 |---|---|---|---|---|---|
-| M0 | _pending commit_ | _pending_ | 56/0/0 (`cd oms && uv run pytest -q`) | spec consolidated, fixtures, inventory, impact assessment | provider gates open |
+| M0 | `103608a` | see PR #2 checks | 56/0/0 (`cd oms && uv run pytest -q`) | spec consolidated, fixtures, inventory, impact assessment | provider gates open |
+| M1 core | `73947dd` | see PR #2 checks | 80/0/0 | services, migrations 0004–0007, acceptance #1–4, 7–9, 11a, 13a, 16, 17, 19, 20 | none (all providers mocked/absent) |
+| M1 worker | _this commit_ | _pending_ | 84/0/0 (`cd oms && uv run pytest`, PostgreSQL 16.x local) | Procrastinate executor (0008, `app/worker.py`) | G-PROC verified locally |

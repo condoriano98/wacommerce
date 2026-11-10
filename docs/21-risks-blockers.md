@@ -7,8 +7,8 @@
 
 Gates (owner → due M0 unless noted): **G-DOKU** DOKU product/signature/notification/status APIs · **G-BS1–3** Biteship
 COD remittance reporting, webhook auth, billing model · **G-CW1** Chatwoot API-channel callback semantics and echo fields
-· **G-PROC** Procrastinate sync worker/periodic/lock features · **G-MB1** closed by design (OSS lacks RLS → DB-role
-identity + OMS reporting) · **G-BS4** Biteship lookup-by-reference_id · **G-ACC1**
+· **G-PROC** Procrastinate sync worker/periodic/lock features · **G-MB1** DB-role reporting identity (`session_user`); PostgreSQL isolation
+tests pass locally (M1), Metabase instance configuration not yet verified · **G-BS4** Biteship lookup-by-reference_id · **G-ACC1**
 accounting framework (SAK EP vs EMKM) and revenue trigger confirmation by accountant · **G-TAX1** PKP/PPN/PPh 22
 treatment · **G-TAX2** record retention period · **G-BANK1** bank statement CSV formats · **G-OPS1** Sumopod PITR ·
 **G-OPS2** Sumopod Postgres role privileges (non-superuser roles, definer functions) · Meta: Indonesia hashed fallback,

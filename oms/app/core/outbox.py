@@ -99,6 +99,35 @@ def dispatch_due(limit: int = 50, now: datetime | None = None) -> int:
     return processed
 
 
+def due_messages(limit: int = 200, now: datetime | None = None) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """(message id, organization id) of due pending messages, skipping rows another transaction is processing."""
+    from sqlalchemy import text
+
+    from app.core.db import worker_session
+
+    with worker_session() as session:
+        rows = session.execute(text("select * from claim_due_outbox(:n, :now)"),
+                               {"n": limit, "now": now or utcnow()}).all()
+    return [(r.id, r.organization_id) for r in rows]
+
+
+def process_message(message_id: uuid.UUID, org_id: uuid.UUID, now: datetime | None = None) -> bool:
+    """Process one outbox message if it is still pending and due (Procrastinate task body). Safe to call repeatedly:
+    a message already done, dead, rescheduled or locked by another worker is skipped."""
+    from sqlalchemy import select
+
+    from app.core.db import act_as_system, worker_session
+
+    with worker_session() as session:
+        act_as_system(session, org_id)
+        msg = session.execute(select(OutboxMessage).where(OutboxMessage.id == message_id)
+                              .with_for_update(skip_locked=True)).scalar_one_or_none()
+        if msg is None or msg.status != "pending" or msg.next_attempt_at > (now or utcnow()):
+            return False
+        process_one(session, msg)
+        return True
+
+
 def requeue_dead_letter(session: Session, dead_letter_id, reviewer_id) -> None:
     from app.models.governance import DeadLetter
 
