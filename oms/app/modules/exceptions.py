@@ -63,6 +63,8 @@ PLAYBOOKS: dict[str, Playbook] = {
     "liquidity_breach": Playbook("critical", "finance_manager", 24, ("reduce_ad_budget", "delay_inventory_buy",
                                                                     "inject_capital", "accept_risk"),
                                  {"inject_capital": "capital_reallocation"}, None),
+    "invariant_violation": Playbook("critical", "finance_manager", 4, ("investigate", "post_adjustment"),
+                                    {"post_adjustment": "ledger_adjustment"}, None),
     "margin_breach": Playbook("high", "finance_manager", 72, ("reprice", "cut_channel", "accept_risk"), {}, None),
     "manual_review": Playbook("medium", "portfolio_manager", 8, ("route_manually", "cancel_and_refund"),
                               {"cancel_and_refund": "refund"}, None),

@@ -116,8 +116,19 @@ def sync_ads_insights(timestamp: int) -> dict:
     return _channels("insights")
 
 
+@procrastinate_app.periodic(cron="23 * * * *", periodic_id="invariants")
+@procrastinate_app.task(name="ops.invariants", queue="maintenance", queueing_lock="ops.invariants")
+def check_invariants(timestamp: int) -> dict:
+    import app.registry  # noqa: F401
+    from app.modules import invariants
+
+    return invariants.run_all()
+
+
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    from app.core.observability import configure_logging
+
+    configure_logging()
     procrastinate_app.run_worker(queues=QUEUES, update_heartbeat_interval=10.0,
                                  stalled_worker_timeout=STALLED_AFTER_SECONDS)
 

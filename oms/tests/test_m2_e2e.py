@@ -44,7 +44,7 @@ def _fresh():
 def doku_notify(client, invoice, amount, status_, request_id):
     body = json.dumps({"order": {"invoice_number": invoice, "amount": int(amount)},
                        "transaction": {"status": status_}}).encode()
-    ts = "2026-11-10T03:00:00Z"
+    ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     s = get_settings()
     sig = signature("MCH-1", request_id, ts, s.doku_notification_path, s.doku_notification_secret, body)
     return client.post("/webhooks/doku", content=body, headers={"Client-Id": "MCH-1", "Request-Id": request_id,

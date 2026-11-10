@@ -38,6 +38,12 @@ def receive_doku(raw: bytes, headers: dict) -> dict:
     h = {k.lower(): v for k, v in headers.items()}
     if not verify_notification(h, raw, s.doku_notification_secret, s.doku_notification_path):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid signature")
+    try:
+        sent_at = datetime.fromisoformat(h.get("request-timestamp", "").replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid request timestamp") from exc
+    if abs((utcnow() - sent_at).total_seconds()) > s.webhook_max_age_seconds:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "stale webhook (replay window exceeded)")
     body = json.loads(raw)
     invoice = (body.get("order") or {}).get("invoice_number")
     with webhook_session() as session:

@@ -339,6 +339,10 @@ def receive_chatwoot(raw_body: bytes, timestamp: str | None, signature: str | No
 
     if not verify_chatwoot_signature(get_settings().chatwoot_webhook_secret, raw_body, timestamp, signature):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid signature")
+    import time as _time
+
+    if abs(_time.time() - int(timestamp)) > get_settings().webhook_max_age_seconds:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "stale webhook (replay window exceeded)")
     p = json.loads(raw_body)
     reason = classify_chatwoot_event(p)
     if reason:

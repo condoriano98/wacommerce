@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     doku_notification_path: str = "/webhooks/doku"
 
     outbox_max_attempts: int = 8
+    # Bearer token for /metrics (Prometheus). Empty → endpoint disabled (404).
+    metrics_token: str = ""
+    # Webhook replay window (seconds) for providers that sign a timestamp (Chatwoot, DOKU).
+    webhook_max_age_seconds: int = 900
     capi_max_event_age_days: int = 7
     attribution_lookback_days: int = 7
     insights_repull_days: int = 28

@@ -20,7 +20,7 @@ from typing import Protocol
 
 import httpx
 
-from app.core.external_ops import NotSent, Rejected
+from app.core.external_ops import Rejected
 from app.integrations import mockstore
 
 SANDBOX_BASE = "https://api-sandbox.doku.com"
@@ -105,11 +105,10 @@ class LiveDoku:
                                      "currency": "IDR", "callback_url": req.callback_url},
                            "payment": {"payment_due_date": req.expiry_minutes},
                            "customer": {"name": req.customer_name or "Customer"}}, separators=(",", ":")).encode()
-        try:
-            r = httpx.post(self.base + CHECKOUT_PATH, content=body, timeout=self.timeout,
-                           headers=self._headers(req.invoice_number, CHECKOUT_PATH, body))
-        except httpx.ConnectError as exc:
-            raise NotSent(str(exc)) from exc
+        from app.integrations.http import request
+
+        r = request("POST", self.base + CHECKOUT_PATH, breaker_key=f"doku:{self.client_id}", provider="doku",
+                    content=body, headers=self._headers(req.invoice_number, CHECKOUT_PATH, body))
         if r.status_code == 409 or 400 <= r.status_code < 500:
             raise Rejected(f"{r.status_code} {r.text[:300]}")
         r.raise_for_status()

@@ -1,0 +1,46 @@
+# Prometheus alert rules for the OMS (M5). Metric names are checked against the exporter by
+# oms/tests/test_m5_ops.py::test_alert_rules_reference_exported_metrics. Not deployed anywhere yet.
+groups:
+  - name: oms
+    rules:
+      - alert: OutboxLagHigh
+        expr: oms_outbox_oldest_due_seconds > 300
+        for: 5m
+        labels: {severity: page}
+        annotations: {summary: "Outbox messages waiting more than 5 minutes (worker down or stuck)"}
+      - alert: JobsStalled
+        expr: oms_jobs_stalled > 0
+        for: 2m
+        labels: {severity: page}
+        annotations: {summary: "Procrastinate jobs held by workers without heartbeat"}
+      - alert: DeadLetters
+        expr: sum(oms_dead_letters_open) > 0
+        for: 1m
+        labels: {severity: ticket}
+        annotations: {summary: "Outbox messages exhausted retries; review via /dead-letters"}
+      - alert: ExternalOperationUncertain
+        expr: sum(oms_external_operations{label=~".*:uncertain"}) > 0
+        labels: {severity: page}
+        annotations: {summary: "Provider side effect with unknown outcome; human check required (ADR-015)"}
+      - alert: ProviderErrors
+        expr: increase(oms_provider_errors_total[10m]) > 10
+        labels: {severity: ticket}
+        annotations: {summary: "Provider errors rising (timeouts/5xx/429)"}
+      - alert: ProviderCircuitOpen
+        expr: increase(oms_provider_circuit_open_total[10m]) > 0
+        labels: {severity: ticket}
+        annotations: {summary: "Circuit breaker open for a provider account"}
+      - alert: ReconciliationExposure
+        expr: sum(oms_reconciliation_open_exposure) > 5000000
+        for: 1h
+        labels: {severity: ticket}
+        annotations: {summary: "Open reconciliation exposure above Rp5M"}
+      - alert: CriticalExceptionCases
+        expr: oms_exception_cases_open{label="critical"} > 0
+        labels: {severity: page}
+        annotations: {summary: "Critical exception case open (liquidity, oversell, invariant)"}
+      - alert: ApiErrorRate
+        expr: sum(rate(oms_http_requests_total{status=~"5.."}[5m])) / sum(rate(oms_http_requests_total[5m])) > 0.02
+        for: 10m
+        labels: {severity: page}
+        annotations: {summary: "API 5xx rate above 2%"}

@@ -79,10 +79,10 @@ class LiveBiteship:
                 "courier_type": req.courier_type, "items": req.items, **req.destination}
         if req.cod_amount:
             body["destination_cash_on_delivery"] = int(req.cod_amount)
-        try:
-            r = httpx.post(f"{self.base}/v1/orders", json=body, headers=self.h, timeout=self.timeout)
-        except httpx.ConnectError as exc:
-            raise NotSent(str(exc)) from exc
+        from app.integrations.http import request
+
+        r = request("POST", f"{self.base}/v1/orders", breaker_key="biteship", provider="biteship", json=body,
+                    headers=self.h)
         if 400 <= r.status_code < 500:
             raise Rejected(f"{r.status_code} {r.text[:300]}")
         r.raise_for_status()

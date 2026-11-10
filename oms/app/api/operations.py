@@ -112,3 +112,13 @@ def record_purchase(task_id: uuid.UUID, body: PurchaseIn, session: DbSession, pr
                                     amount_paid=body.amount_paid, evidence_ref=body.evidence_ref,
                                     lines=[(ln.order_item_id, ln.qty, ln.unit_price) for ln in body.lines])
     return {"id": str(p.id)}
+
+
+@router.post("/ops/invariants/check")
+def check_invariants(session: DbSession, principal: CurrentPrincipal) -> dict:
+    """Run the invariant checks for the caller's organization (finance). Violations open cases; nothing is fixed."""
+    from app.modules import invariants
+
+    principal.require("finance.manage")
+    found = invariants.run(session, principal.org_id)
+    return {"ok": not found, "violations": found}

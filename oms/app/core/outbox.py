@@ -43,8 +43,13 @@ def enqueue(
 
     from sqlalchemy import text
 
+    from app.core.observability import correlation_id
+
     if org_id is None:
         raise ValueError("org_id required")
+    cid = correlation_id.get()
+    if cid and "_cid" not in payload:  # request → job correlation (no data, only the ID)
+        payload = {**payload, "_cid": cid}
     session.execute(text("select enqueue_outbox(:t, :k, cast(:p as jsonb), :n)"),
                     {"t": topic, "k": dedupe_key, "p": json.dumps(payload),
                      "n": utcnow() + (delay or timedelta(0))})
@@ -56,6 +61,17 @@ def _backoff(attempts: int) -> timedelta:
 
 def process_one(session: Session, msg: OutboxMessage) -> None:
     """Run one handler attempt inside the caller's transaction (already scoped to the message's org)."""
+    from app.core.observability import METRICS, correlation_id, new_cid
+
+    token = correlation_id.set((msg.payload or {}).get("_cid") or new_cid())
+    try:
+        _process(session, msg)
+    finally:
+        METRICS.inc("outbox_processed_total", {"topic": msg.topic, "status": msg.status})
+        correlation_id.reset(token)
+
+
+def _process(session: Session, msg: OutboxMessage) -> None:
     fn = HANDLERS.get(msg.topic)
     msg.attempts += 1
     try:
@@ -65,7 +81,8 @@ def process_one(session: Session, msg: OutboxMessage) -> None:
             fn(session, msg)
         msg.status, msg.processed_at, msg.last_error = "done", utcnow(), None
     except Exception as exc:  # noqa: BLE001 - recorded, retried, dead-lettered
-        log.warning("outbox %s failed: %s", msg.topic, exc)
+        log.warning("outbox handler failed", extra={"fields": {"topic": msg.topic, "attempt": msg.attempts,
+                                                             "error": str(exc)[:300]}})
         msg.last_error = str(exc)[:2000]
         if msg.attempts >= get_settings().outbox_max_attempts:
             msg.status = "dead"
