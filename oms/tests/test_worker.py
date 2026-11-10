@@ -57,6 +57,10 @@ def _cleanup() -> None:
 
 def test_relay_defers_once_and_worker_processes_each_message_once(tenant):
     _cleanup()
+    from app.core.outbox import dispatch_due
+
+    while dispatch_due():  # other tests' due messages (shared database) must not be counted here
+        pass
     with tenant_session(tenant.org_id, tenant.users["owner"]) as s:
         for n in ("a", "b"):
             enqueue(s, tenant.org_id, "test.worker", f"w-{n}-{tenant.org_id}", {"n": n})

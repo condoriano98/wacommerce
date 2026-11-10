@@ -2,7 +2,6 @@
 after close (#13b). Activity is produced by the real services (F1-style order + ad accrual + opex)."""
 
 from datetime import date, timedelta
-from decimal import Decimal
 
 import pytest
 from fastapi import HTTPException
@@ -137,7 +136,7 @@ def test_12_allocation_change_is_effective_dated_and_13b_snapshots_survive_later
 
     # #13b: the close snapshot is unchanged and cannot be edited or deleted, even by the schema owner.
     with tenant_session(tenant.org_id, fin.user_id) as s:
-        for (scope, pid), (sid, sha, payload) in v1.items():
+        for sid, sha, payload in v1.values():
             snap = s.get(FpaSnapshot, sid)
             assert (snap.sha256, snap.payload, snap.version) == (sha, payload, 1)
         recomputed = waterfall.compute(s, lm_start, lm_end, legal_entity_id=tenant.legal_entity_id).as_dict()
