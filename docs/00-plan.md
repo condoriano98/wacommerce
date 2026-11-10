@@ -1,4 +1,4 @@
-# Wacommerce V3.1 — Financially Controlled Commerce & Capital Allocation OS (Master Plan)
+# Wacommerce V3.1 — Financially Controlled Commerce & Capital Allocation OS (Canonical Specification)
 
 Status: **V3.1 architecture revision (planning only)** · supersedes V3.0 plan of 2026-11-09 and design revisions R1–R5
 (2026-11-10) by integrating them · repo `condoriano98/wacommerce`, branch `claude/intelligent-cori-6qujr0`.
@@ -42,7 +42,7 @@ migrations, purchases, bookings, refunds, ad changes or capital movements are au
 | D6 | Customer identities unique per brand | BSUID is scoped to the Meta business; marketplace buyer IDs to the shop | `customer_identities UNIQUE(identity_domain_id, provider, identity_type, value)`; internal immutable customer UUIDs | `customers`, `messaging` | Identity domain backfill | P0 | Same phone in two businesses → two customers; same BSUID twice → one |
 | D7 | Chatwoot WhatsApp inbox proxy + "reassert webhook" cron (V3.0), then R1 API-channel | Competing ownership; echo loops undefined | **OMS sole Meta owner**, Chatwoot API-channel inbox, message mapping table with origin, echo suppression, raw-event persistence before ack, async processing/replay | `messaging`, `integrations/chatwoot`, n8n | `wa_events`, `message_mappings`; remove reassert job | P0 | E2E: no duplicate sends, no loops, handoff works, replay idempotent |
 | D8 | Capital reallocation executed as cash journals (Dr Cash/Cr 3100) | Manufactures bank movements; inflates assets | **Management capital ledger** (mandates, allocations, commitments) separate from GL; real transfers only between legal-entity bank accounts as intercompany journals | `capital` (new), `finance` | Remove cash postings from reallocation; new tables | P0 | Reallocating Rp10M changes mandates, GL unchanged |
-| D9 | Manual transfer "verified" by a human from receipt → paid | Screenshot ≠ settlement | Payment states `reported → attested → bank_matched`; release policy configurable (default: finance attestation with bank reference releases fulfilment; reconciliation stays open until bank line matched; ageing exception at T+2 business days) | `payments`, `reconciliation` | New payment states, `bank_statement_lines` | P0 | Receipt alone never sets `bank_matched`; unmatched ages into exception |
+| D9 | Manual transfer "verified" by a human from receipt → paid | Screenshot ≠ settlement | Payment states `reported → attested → bank_matched`; receipts/attestations post nothing; default: fulfil only after bank match; optional approval-backed "release on attestation" posts revenue to 1105 receivable pending verification (correction 3); ageing exception at T+2 business days | `payments`, `reconciliation` | New payment states, `bank_statement_lines` | P0 | Receipt alone never sets `bank_matched`; unmatched ages into exception |
 | D10 | Reconciliation implicit in settlements table | No expected/actual/evidence/ageing model | **Reconciliation module**: runs, items (expected, actual, diff, evidence, operator, class, ageing, exposure, approvals) for DOKU, bank, Biteship COD, marketplaces, suppliers, stock counts, ads | `reconciliation` (new) | New tables | P0 | Every money movement traceable event → journal → settlement evidence |
 | D11 | ADR-003 dropped Procrastinate for a custom SKIP LOCKED dispatcher | V3.1 stack retains Procrastinate | **Transactional outbox table retained** (atomic with business writes) + **Procrastinate** as executor (relay, leases, retries, periodic jobs, dead letters) | `core/outbox`, worker | Add procrastinate schema migration | P1 | Kill worker mid-job → job re-leased, effect applied once |
 | D12 | Exceptions as cases (R4) | Not tied to reconciliation/ageing/exposure | Cases link to reconciliation items, carry financial exposure, ageing buckets, SLA, approval history | `exceptions` | Columns added | P0 | Exposure totals on dashboard equal open reconciliation differences |
@@ -77,7 +77,7 @@ migrations, purchases, bookings, refunds, ad changes or capital movements are au
 | Database | PostgreSQL 16 | System of record; RLS; Sumopod managed |
 | Jobs | **Transactional outbox + Procrastinate** (Postgres-backed) | Outbox row written in the business transaction; a Procrastinate relay job claims outbox rows and runs handlers; Procrastinate provides leases, retries with backoff, periodic tasks, locks per key, dead-letter (failed) state. **Gate G-PROC**: confirm Procrastinate version supports sync psycopg3 workers + periodic tasks + `lock`/`queueing_lock`; fallback = keep current SKIP LOCKED dispatcher behind the same interface |
 | Frontend | Next.js + Refine + shadcn/ui | Ops + approvals + finance UI |
-| Reporting | Metabase OSS on read-only views (dedicated `oms_reporting` role, RLS-scoped) | |
+| Reporting | OMS API (RLS) for portfolio users; Metabase OSS for org-level users on PII-free `reporting` views via per-org login roles (DB-role identity, correction 7) | OSS has no row-level security |
 | Orchestration | n8n (Sumopod) | Never authoritative; calls OMS commands only |
 | Shared inbox | Chatwoot Community, **API-channel inbox** | Runtime deps: Rails web, Sidekiq, Redis 7, Postgres, object storage for attachments |
 | WhatsApp | Meta WhatsApp Cloud API (Graph v27.0, configurable) | OMS is the only Meta client |
@@ -201,8 +201,11 @@ source), row fingerprints for duplicate prevention, dry-run preview, reconciliat
 - **Credentials**: no grants for `oms_app`; written via `store_credential()` (owner role check); read only by
   `oms_worker` through `read_credential()` definer that audits each read; key versioning for rotation; revocation flag.
 - **Permissions** (actions) in app layer (`authz.PERMISSIONS`); **visibility** in Postgres. Every surface enforced: API,
-  workers, imports, webhooks, reports (reporting role views filter by `app.user_id` set by Metabase sandboxing or
-  per-portfolio Metabase groups — **G-MB1** verify Metabase OSS capability; fallback: per-portfolio read views).
+  workers, imports, webhooks, reports. Reports: portfolio-level through OMS API; Metabase via per-org reporting login
+  roles whose identity is resolved from `current_user` in `reporting_principals` (GUCs ignored for reporting roles),
+  SELECT only on PII-free `reporting` views (correction 7).
+- **Partial order visibility** (correction 4): order header visible only with org scope or full-line visibility;
+  portfolio-limited users use `order_slices` exposing only their lines/allocations.
 - Sensitive actions audited (credentials, approvals, capital, refunds, price overrides, policy overrides, ledger
   adjustments, exports of personal data).
 
@@ -218,7 +221,9 @@ Independent machines; aggregate order status is **derived** (never set directly)
 - **Shipment**: `draft → booked (approval for paid booking) → picked → in_transit → delivered | on_hold | failed |
   returning → returned`; idempotent carrier events.
 - **Payment**: `pending → authorized/captured (gateway, re-checked) → settled (disbursement matched)`; manual:
-  `reported (receipt) → attested (finance + bank ref) → bank_matched`; `failed | expired | refunded (partial)`.
+  `reported (receipt) → attested (finance + bank ref; no ledger effect) → bank_matched (ledger)`;
+  `failed | expired | refunded (partial)`. Fulfilment release default = `captured` (gateway, re-checked) or
+  `bank_matched` (manual); optional approved policy = `attested` with exposure limit (1105).
 - **Settlement**: `expected → received → matched | mismatch → resolved`.
 - **Purchase task**: `open → observed → blocked | awaiting_approval → approved → purchased (lines, qty) → shipped →
   delivered | canceled | supplier_canceled`.
@@ -255,12 +260,14 @@ Policies:
 
 Chart of accounts (renumbered; contract liability moved to the liability range):
 1000 Bank · 1010 Gateway receivable (DOKU) · 1020 Carrier balance (Biteship) · 1030 Prepaid ad balances · 1100 COD
-receivable · 1110 Marketplace receivable · 1120 Supplier refund receivable · 1200 Inventory · 1250 Goods in transit ·
+receivable · 1105 Customer receivable – transfer pending verification · 1109 Allowance for expected credit losses ·
+1110 Marketplace receivable · 1120 Supplier refund receivable · 1200 Inventory · 1250 Goods in transit ·
 1210 Supplier prepayments · 1400 Prepaid taxes (PPh 22 creditable) · 1900 Intercompany receivable · 2000 Supplier
 payables · 2010 Carrier payables · 2020 Ads payables · 2100 Refunds payable · 2200 Contract liabilities (customer
 advances) · 2300 Taxes payable · 2900 Intercompany payable · 3000 Owner capital · 3900 Retained earnings · 4000 Sales
 revenue · 4100 Shipping income · 4900 Sales returns & allowances · 5000 COGS · 5100 Shipping expense · 5200 Payment &
 COD fees · 5300 Marketplace fees · 5400 Packing · 5500 Return & failed-delivery losses · 5600 Variable AI/CS cost ·
+5700 Expected credit losses (net of recoveries) ·
 6000 Advertising · 6900 Operating expenses.
 
 Journal fixtures (executable test data at Milestone 1; amounts IDR):
@@ -271,8 +278,11 @@ Journal fixtures (executable test data at Milestone 1; amounts IDR):
 - **F2 COD**, goods 150,000 + shipping 15,000, COD fee 4,950, carrier-deducted shipping 12,000: pickup Dr1250/Cr1200 ·
   delivery Dr1100 165,000/Cr4000 150,000/Cr4100 15,000; Dr5000/Cr1250; Dr5200 4,950/Cr1100 4,950; Dr5100 12,000/
   Cr1100 12,000 · remittance Dr1020 148,050/Cr1100 148,050 · withdrawal Dr1000/Cr1020 (less withdrawal fee → 5200).
-- **F3 Manual transfer**: reported (no journal) → attested with bank ref Dr1000/Cr2200 (bank_matched later confirms) →
-  delivery as F1.
+- **F3a Manual transfer, bank match before delivery** (default policy): reported (no journal) → attested (no journal)
+  → bank line matched Dr1000 115,000/Cr2200 115,000 → delivery Dr2200/Cr4000 100,000/Cr4100 15,000.
+- **F3b Manual transfer, release on attestation** (approved policy): reported/attested (no journal) → delivery
+  Dr1105 115,000/Cr4000 100,000/Cr4100 15,000 → bank match Dr1000/Cr1105; if unmatched past SLA: Dr5700/Cr1109
+  allowance (write-off Dr1109/Cr1105 only with approval).
 - **F4 Marketplace**, 240,000, expected fee 19,200, actual 20,000, PPh 22 1,200: delivery Dr1110 240,000/Cr4000;
   Dr5300 19,200/Cr1110 · settlement Dr1000 218,800/Dr5300 800/Dr1400 1,200/Cr1110 220,800.
 - **F5 Dropship**, prepaid 165,000, supplier 100,000: capture Dr1010/Cr2200 · purchase Dr1210 100,000/Cr1000 ·
@@ -384,9 +394,12 @@ failed-delivery rates; risk-adjusted bulk-buy evaluator (demand stability, savin
 downside, post-buy liquidity); stress tests. Decimal arithmetic, explicit rounding (HALF_UP to 1 rupiah for allocations,
 remainder to last line), IDR reporting currency, FX table if foreign currency appears.
 **Rp100M simulator**: Portfolios A/B/C, reserve, ad budgets, inventory buys, dropship working capital, fulfilment cost,
-settlement delays, fixed opex, test-and-learn acquisition cost, reinvestment/recovery. Stress: CPA↑, CVR↓, returns↑, COD
-delay↑, supplier cost↑, sell-through↓, ad underperformance, integration outage. Outputs per portfolio and consolidated:
-profit, liquidity path, shortfall probability/date, capital recovery horizon, capital productivity. Advisory only.
+settlement delays, fixed opex, test-and-learn acquisition cost, reinvestment/recovery. Stress (correction 8): S1 CPA
++30/+60%, S2 CVR −25%, S3 returns ×2, S4 COD delay +7/+14d, S5 supplier cost +10/+20%, S6 sell-through −40%, S7 ROAS −35%,
+S8 channel outage 7d, S9 marketplace settlement delay +14d with platform fee +2pp; "combined downside" preset
+(S1+S2+S4+S5). Outputs per portfolio and consolidated (deterministic): profit, liquidity path, minimum cash and shortfall
+date, capital recovery horizon, capital productivity; base case reconciles to ledger actuals for elapsed periods.
+Probabilities (Monte Carlo) only after distributions are documented and validated. Advisory only.
 **Close & audit**: `accounting_periods` (open → soft close → closed), `fpa_snapshots` versioned, adjustment journals,
 restatement only via adjustments with approval, effective-dated allocations, separate operational vs accounting
 timestamps, immutable journals/audit.
@@ -394,7 +407,7 @@ timestamps, immutable journals/audit.
 ## 16. Payments (revised)
 
 DOKU payment links (adapter after G-DOKU verification); notification = trigger → status re-check via API → capture;
-manual transfer reported → attested → bank_matched; COD per F2; partial refunds per item allocation; payment fees as
+manual transfer reported → attested → bank_matched (receipts never debit bank; F3a/F3b); COD per F2; partial refunds per item allocation; payment fees as
 allocations; idempotent notifications; mismatches → `payment_mismatch` case.
 
 ## 17. Marketplace & advertising integrations (preserved from V3.0 §1a)
@@ -444,9 +457,9 @@ docs access, accountant availability.
 Modules: org/legal entities/identity domains, capital (mandates/commitments), platforms + capability registry, catalog,
 customers, quotes, orders + items + allocations, fulfillment groups, procurement (purchase lines), inventory (goods in
 transit, counts), payments, settlements, reconciliation, ledger (periods, rules v2), approvals, audit, outbox +
-Procrastinate. Migrations: **rebaseline** 0001–0003 (no deployed data exists) into a V3.1 baseline with composite FKs,
-roles without BYPASSRLS. Tests: F1–F12, invariants, RLS negative suite, concurrency (oversell, over-procurement).
-Mock/live: all providers mocked. Controls: approvals, audit. DoD: acceptance tests 1–9, 11, 13, 16–18 green.
+Procrastinate. Migrations: **forward-only 0004+** (expand/backfill/contract, ADR-013/014) with composite FKs, roles
+without BYPASSRLS; history of 0001–0003 preserved. Tests: F1–F12, invariants, RLS negative suite, concurrency (oversell, over-procurement).
+Mock/live: all providers mocked. Controls: approvals, audit. DoD: acceptance tests 1, 2, 3, 4, 7, 8, 9, 11a, 13a, 16, 17, 19, 20 green (local + CI).
 Deployment readiness: staging DB migration dry-run. Blockers: G-ACC1/G-TAX1 defaults configurable.
 
 **M2 — WhatsApp commerce vertical slice** (≈20 days)
@@ -459,12 +472,12 @@ Blockers: WABA + Chatwoot instance on Sumopod; DOKU sandbox keys.
 
 **M3 — FP&A & capital intelligence** (≈15 days)
 Modules: waterfall views, L1–L3, budgets/forecasts, 13-week cash forecast, capital utilisation, simulator + stress,
-risk alerts, bulk-buy evaluator, close/snapshots, Metabase. Tests: 12, 13, 18 + snapshot immutability. DoD: Rp100M
+risk alerts, bulk-buy evaluator, close/snapshots, Metabase. Tests: 12, 13b, 18 + S1–S9. DoD: Rp100M
 scenario reproducible; alerts fire on breach.
 
 **M4 — Marketplace & advertising expansion** (≈25 days)
 Modules: Shopee, TikTok Shop (+Tokopedia & Shop), Lazada adapters (orders, fees, settlements), Meta/Google/TikTok/
-marketplace ads insights, CSV import framework. Tests: 10, 11 + contract tests against recorded sandbox payloads.
+marketplace ads insights, CSV import framework. Tests: 10, 11b + contract tests against recorded sandbox payloads.
 Mock vs live: mocked until registry states `available`. Blockers: Shopee eligibility, TikTok ISV, Lazada app approval,
 Google/TikTok app reviews.
 
@@ -487,9 +500,13 @@ runbooks signed off. No mocked integration is labelled production-ready.
 | 8 | Multiple supplier purchases within one order; duplicate purchase attempts rejected | M1 |
 | 9 | Overselling prevented under concurrent reservations across channels | M1 |
 | 10 | Missing marketplace credentials → capability `not_authorized`, no calls | M4 |
-| 11 | Failed/delayed settlement ages into exception with exposure | M1/M4 |
+| 11a | DOKU/COD/bank settlement failure or delay ages into exception with exposure | M1 |
+| 11b | Marketplace settlement failure or delay ages into exception with exposure | M4 |
 | 12 | Ad cost allocation change effective-dated; closed periods unchanged | M3 |
-| 13 | Financial close and adjusting entries | M1/M3 |
+| 13a | Ledger period close and adjusting entries | M1 |
+| 13b | FP&A snapshot immutability after close | M3 |
+| 19 | F1–F13 executed through OMS services against PostgreSQL match fixture lines | M1 |
+| 20 | Order-slice and reporting-role isolation (session_user identity, set_config/SET ROLE spoof attempts) | M1 |
 | 14 | AI tool authorization failures logged; prompt-injection fixtures | M2 |
 | 15 | WhatsApp outbound loop prevention (Chatwoot echo) | M2 |
 | 16 | Capital reallocation creates no cash journal | M1 |
@@ -518,12 +535,20 @@ liabilities = undelivered prepaid value.
 | C12 | Identity scope | identities unique per brand | per identity domain + provider (§5) |
 | C13 | Inventory at shipment | stock reduced at ship but GL inventory until delivery | Goods in transit 1250 (§9) |
 | C14 | Plan §1 "Payments DOKU…to verify" vs adapters described as implemented | DOKU adapter not built | G-DOKU gate (§6) |
+| C15 | Migration strategy | ADR-013 "rebaseline 0001–0003" | Forward-only migrations 0004+ with expand/backfill/contract (§27.2) |
+| C16 | Unverified manual payments | Draft "1015 payments pending bank verification" asset | No entry/asset on receipt or attestation; 1105 receivable only for approved release-on-attestation (§27.3) |
+| C17 | Reporting identity | GUC/`ALTER ROLE SET` identity; `current_user` mapping | `session_user` → `reporting_principals`, GUCs ignored for reporting roles (§27.7) |
+| C18 | Simulator probabilities | "seeded Monte Carlo" in M3 | Deterministic first; Monte Carlo flag-gated until assumptions validated (§27.8) |
+| C19 | Ninth stress scenario | Undefined / "combined downside" counted as #9 | S9 = marketplace settlement delay +14d with fee +2pp; combined downside is a preset (§27.8) |
+| C20 | Partial order visibility | Order header visible if any line visible | Header only with org scope or full-line visibility; `order_slices` otherwise (§27.4) |
+| C21 | DB role cutover | Remove `oms_system` in one step | Expand/contract with `OMS_DB_ROLE_MODE` flag (§27 round 3) |
+| C22 | Acceptance-test ownership | Tests #11/#13 shared by two milestones | Split into 11a/11b and 13a/13b with single owners (§20) |
 
 ## 22. Implementation backlog
 
 | Pri | Item | Module | Depends | Effort (d) | Test gate | External blocker |
 |---|---|---|---|---|---|---|
-| P0 | V3.1 baseline migration (legal entities, identity domains, composite FKs, roles w/o BYPASSRLS, resolvers) | migrations, core/db | M0 | 4 | RLS negative suite (#7) | Sumopod role privileges (G-OPS2) |
+| P0 | V3.1 forward migrations 0004–0007 expand/backfill/contract (legal entities, identity domains, composite FKs, roles w/o BYPASSRLS, resolvers) | migrations, core/db | M0 | 5 | RLS negative suite (#7) | Sumopod role privileges (G-OPS2) |
 | P0 | Accounting rules v2 + periods + CoA renumber + F1–F12 | finance | baseline | 4 | #3 #4 #13 + invariants | G-ACC1/G-TAX1 defaults |
 | P0 | Order items qty model, allocations, fulfillment groups, derived status | orders, fulfillment | baseline | 5 | #1 #2 | — |
 | P0 | Procurement purchase lines + qty invariant + copilot API | procurement | orders | 3 | #8 | — |
@@ -549,7 +574,8 @@ liabilities = undelivered prepaid value.
 | P2 | Google Ads + Data Manager conversions | integrations/google_ads | M1 | 4 | contract | access level |
 | P2 | TikTok Ads + marketplace ads | integrations/* | M1 | 4 | contract | app review |
 | P2 | Landing page + Pixel/website CAPI | landing | conversions | 3 | dedupe test | domain |
-| P2 | Metabase per-portfolio access | reporting | G-MB1 | 2 | #7 (reporting) | — |
+| P1 | Reporting roles + `reporting_principals` + PII-free views; OMS portfolio reporting API | reporting | baseline | 2 | #7 (reporting role spoof test) | — |
+| P1 | `external_operations` + provider idempotency policies + uncertain-outcome cases | core/outbox, integrations | outbox | 2 | worker-kill test | G-DOKU, G-BS4 |
 
 ## 23. Documentation set (to write/update after approval; plan mode allows only this file)
 
@@ -579,7 +605,8 @@ regression baseline and are rewritten where semantics change (COD, capital).
 
 Gates (owner → due M0 unless noted): **G-DOKU** DOKU product/signature/notification/status APIs · **G-BS1–3** Biteship
 COD remittance reporting, webhook auth, billing model · **G-CW1** Chatwoot API-channel callback semantics and echo fields
-· **G-PROC** Procrastinate sync worker/periodic/lock features · **G-MB1** Metabase OSS row-level access · **G-ACC1**
+· **G-PROC** Procrastinate sync worker/periodic/lock features · **G-MB1** closed by design (OSS lacks RLS → DB-role
+identity + OMS reporting) · **G-BS4** Biteship lookup-by-reference_id · **G-ACC1**
 accounting framework (SAK EP vs EMKM) and revenue trigger confirmation by accountant · **G-TAX1** PKP/PPN/PPh 22
 treatment · **G-TAX2** record retention period · **G-BANK1** bank statement CSV formats · **G-OPS1** Sumopod PITR ·
 **G-OPS2** Sumopod Postgres role privileges (non-superuser roles, definer functions) · Meta: Indonesia hashed fallback,
@@ -609,5 +636,115 @@ delegated approver policy **G-GOV1**).
 6. **Consistency**: V3.1 is internally consistent after the contradiction register is applied; ready for phased
    implementation gated by M0.
 7. **First milestone**: **M0 — Architecture & Provider Verification**: write the §23 documentation set, journal fixtures
-   F1–F12 as executable YAML with a balance checker, ERD and ADRs, resolve G-DOKU/G-BS/G-CW1/G-PROC/G-MB1, request
-   accountant input (G-ACC1/G-TAX1); then M1 begins with the V3.1 baseline migration and the RLS negative test suite.
+   F1–F12 (F3a/F3b) as executable YAML with a balance checker, ERD and ADRs, work G-DOKU/G-BS/G-CW1/G-PROC, request
+   accountant input (G-ACC1/G-TAX1); then M1 begins with forward migration 0004 (expand) and the RLS negative suite.
+
+## 27. Normative corrections (2026-11-10, rounds 2–3) — integrated into this specification
+
+These items are part of the specification. Where an earlier section is less specific, this section governs. Execution procedure (branching, CI cadence, reporting) lives in `docs/29-execution-playbook.md`.
+
+1. **Git/CI**: dedicated branch `impl/v31` created from `claude/intelligent-cori-6qujr0`; PR #1 integrated by **merging**
+   `origin/chore/m5-readiness-gates-20261110` (SHAs preserved → no conflicting PR; PR #1 shows as contained). One draft PR
+   `impl/v31 → claude/intelligent-cori-6qujr0` whose body states it includes PR #1. `oms-ci.yml` triggers on
+   `pull_request` **and** `push` to `impl/**` and `claude/**`; milestone done only when the GitHub check run for the
+   milestone commit is green (read via GitHub MCP `get_check_runs`/actions) **and** local run is green.
+2. **Migration safety**: inventory done read-only — revisions `0001_schema`, `0002_security`, `0003_reference_data`;
+   databases only local `oms` (dev) and `oms_test` (recreated per test run); remote branches touching migrations: none
+   (`chore/m5…` = CI/docs only); no deployment config in repo. Sumopod DB migration status is **unknown → not proven
+   disposable**. Decision: **no history replacement** — V3.1 schema is delivered as **forward migrations 0004+**
+   (expand → backfill → contract), each with a downgrade where safe. Re-verify the local inventory (row counts,
+   `alembic_version`) when Postgres is restarted and record it in `docs/27`. ADR-013 rewritten: "forward-only".
+   **Staged migration deployment** (`docs/18`, ADR-014): (1) pre-migration backup + restore check; (2) rehearse on a
+   restored staging copy; (3) apply *expand* migration as `oms_owner` via a one-off job with `lock_timeout=5s`,
+   `statement_timeout`, idempotent DDL — old code keeps working; (4) deploy new code (reads/writes both shapes where
+   needed); (5) run *backfill* as a batched, resumable, idempotent job with invariant checks (journals balance,
+   quantities, tenant FK validity); (6) only in a later release, after verification, apply *contract* migration
+   (drop superseded columns/constraints). Each step has a written rollback (code revert before schema; contract steps
+   never run in the same release as expand). Production execution requires explicit approval.
+3. **Payment accounting (resolved)**: manual payments `reported → attested → bank_matched`. **Receipts and attestations
+   create no ledger entry and no asset** (an unverified claim is not a resource). Postings: bank-statement match before
+   delivery → Dr 1000 / Cr 2200 (contract liability); default release policy = fulfil only after `bank_matched`.
+   Optional per-portfolio policy "release on attestation" (approval-backed exposure limit): if goods are delivered
+   before the bank match, revenue is recognised against **1105 Customer receivable – transfer pending verification**
+   (Dr 1105 / Cr 4000/4100); later bank match → Dr 1000 / Cr 1105; unmatched beyond SLA → `bank_unmatched` case,
+   allowance Dr 5700 Expected credit losses / Cr 1109 Allowance, write-off only with approval. Exposure on 1105 is
+   reported per portfolio. Fixture F3 split into F3a (bank match before delivery) and F3b (release on attestation).
+   Accounts added to the CoA: **1105**, **1109 Allowance for expected credit losses** (contra-asset), **5700 Expected
+   credit losses (net of recoveries)**. Credit-loss fixtures **F13**: (a) allowance Dr5700/Cr1109; (b) allowance release
+   when the transfer is later matched: Dr1109/Cr5700 then Dr1000/Cr1105; (c) approved write-off Dr1109/Cr1105;
+   (d) recovery after write-off: Dr1000/Cr5700 (recovery credited to the same expense line, shown separately in reports).
+
+**Additional corrections (user, 2026-11-10, round 3)**
+- **DB-role cutover is backward-compatible** (expand/contract, ADR-014): 0005 *creates* `oms_worker`, `oms_webhook`,
+  `oms_reporting_owner`, reporting roles, resolvers and new policies **alongside** the existing `oms_app`/`oms_system`;
+  code switches worker/webhook to the new roles behind a config flag (`OMS_DB_ROLE_MODE=legacy|v31`); after both CI
+  modes and isolation tests pass, a later contract migration revokes BYPASSRLS from and drops `oms_system`. No step
+  removes a role still used by deployed code; credentials for new login roles come from the secret store.
+- **Acceptance-test ownership** (single owner per test; split where a test spans milestones): M1 → #1, #2, #3, #4, #7,
+  #8, #9, #11a (DOKU/COD/bank settlement ageing), #13a (ledger close + adjustments), #16, #17, F1–F13 service tests,
+  RLS/order-slice/reporting-role isolation; M2 → #5, #6, #14, #15, E2E vertical slice; M3 → #12, #13b (FP&A snapshot
+  immutability), #18, S1–S9; M4 → #10, #11b (marketplace settlement ageing), adapter contract tests; M5 → PR #1
+  hardening tests 1–10 + DR drill. §19/§20 updated to match.
+- **Canonical spec vs execution playbook**: `docs/00-plan.md` = canonical V3.1 architecture specification only
+  (§A–§26 with all corrections integrated); `docs/29-execution-playbook.md` = this execution section (branching, CI,
+  milestone steps, reporting, migration/role cutover procedures). The playbook references the spec and never redefines
+  architecture; contradictions are resolved in the spec only.
+4. **Partial visibility**: `orders` header (totals, shipping address, payment data) visible only to org-scope roles or
+   users who can see **every** line of the order; portfolio-limited users read `order_slices` (security-barrier view /
+   definer function) exposing order number, derived status and **only their lines and line-level allocations**; customer
+   PII visible only via `customer_portfolios`; addresses only through the shipment/fulfilment groups they own. Negative
+   tests assert no header totals, other lines or other portfolios' allocations leak.
+5. **Procurement concurrency**: `purchase_lines` insert/update/delete maintains `order_items.qty_procured` via trigger
+   under `SELECT … FOR UPDATE` of the item row; `CHECK qty_procured <= qty_allocated_dropship`; tests use **separate DB
+   connections in threads with a barrier** (two concurrent purchases exceeding qty → exactly one commits).
+6. **Jobs**: Procrastinate worker with heartbeat; periodic `retry_stalled_jobs` task (stalled = heartbeat older than
+   threshold); retries with exponential backoff; terminal failures → `dead_letters` table + review/requeue API + metric.
+   Every external side effect is an `external_operations` row (provider, operation, idempotency key, status
+   `prepared → sent → confirmed | uncertain | failed`) written and committed **before** the call. **Provider-specific
+   idempotency policies** (ADR-015, `docs/04` table; provider facts marked unverified until gates close):
+   | Operation | Key | Uncertain outcome (timeout/crash after send) | Retry rule |
+   |---|---|---|---|
+   | DOKU create payment link | `invoice_number` = payment id | check status by invoice number (G-DOKU) | reuse same invoice; never new number |
+   | DOKU notification | `(provider, notification_id)` | n/a (inbound) | dedupe |
+   | Biteship create order (paid booking) | `reference_id` = shipment id | lookup by reference **if supported (G-BS4)**, else mark `uncertain` → reconciliation task + human check in Biteship dashboard | **no automatic re-create** |
+   | Meta WhatsApp send | OMS message id (no provider idempotency) | wait for status webhook (wamid) up to 15 min; else `uncertain` → human decides | **no automatic resend** of uncertain sends |
+   | Meta CAPI event | `event_id` (Meta doesn't dedupe BM) | `uncertain`, no resend; logged | resend only on pre-send/connection failures |
+   | Chatwoot mirror post | `echo_token` in message attributes | search conversation for token | re-post only if absent |
+   | Marketplace writes (e.g. ship/arrange pickup) | platform order id + action | read order status first | retry only if status unchanged |
+   | Marketplace/ads reads, imports | window + cursor / file fingerprint | safe | idempotent upserts |
+   | Refund payout / supplier purchase / ad budget | n/a — **human-executed outside OMS** | n/a | OMS records evidence only |
+   Test: kill the worker after the mock provider accepted but before commit → restart → stalled recovery → policy
+   lookup finds the effect → exactly one external effect; uncertain-without-lookup cases end in `uncertain` + case.
+7. **Metabase OSS**: no sandboxing/impersonation/auth-embedding assumed. Portfolio-level reporting is served by the OMS
+   API under RLS (dashboard pages). Metabase only for org-level users. **Database-backed tenant identity** (resolved):
+   GUC-based identity is spoofable from Metabase native SQL (`set_config`), so reporting identity comes from the
+   **login role**. `current_user` is unusable for this: inside SECURITY DEFINER helpers it is the function owner, and
+   inside definer views it is the view owner. Identity therefore uses **`session_user`**, which `SET ROLE` cannot change
+   and `SET SESSION AUTHORIZATION` requires superuser. Design: table `reporting_principals(db_role UNIQUE,
+   organization_id, principal_user_id)`; `app_org()`/`app_user()` first check `session_user` against
+   `reporting_principals` — if it is a reporting login, return the mapped ids and **ignore GUCs**; otherwise return the
+   transaction GUCs (honoured only for server-side roles `oms_app`/`oms_worker`/`oms_webhook`). Reporting views live in
+   schema `reporting`, owned by `oms_reporting_owner` (NOLOGIN, not a table owner, no BYPASSRLS, SELECT on needed base
+   tables) and created with `security_invoker = false`, so base-table RLS evaluates `app_org()` → `session_user` mapping.
+   Per-org login roles `rpt_<org_short>` (NOINHERIT, member of nothing privileged, `CONNECTION LIMIT`,
+   `statement_timeout`) get only `USAGE` on `reporting` + `SELECT` on PII-free aggregate views. Metabase native-query
+   permission off for non-admin groups. Signed guest embeds with locked params = presentation only.
+   **G-MB1 stays unverified** until PostgreSQL tests pass: reporting login cannot see another org's rows via views; `SELECT
+   set_config('app.org_id', …)` / `SET app.user_id` changes nothing; `SET ROLE` to any other role fails; base tables
+   and definer data functions are not accessible; views return only the mapped org.
+8. **FP&A simulation**: deterministic, ledger-reconciled scenarios first. Nine stress scenarios explicit: S1 CPA +30/+60%,
+   S2 CVR −25%, S3 returns ×2, S4 COD delay +7/+14d, S5 supplier cost +10/+20%, S6 sell-through −40%, S7 ROAS −35%,
+   S8 one channel outage 7d, **S9 marketplace settlement delay +14d with platform fee +2pp** (combined downside kept as a
+   preset combining S1+S2+S4+S5, not counted as S9). Monte Carlo = Planned, behind a flag, enabled only with documented
+   and validated distributions.
+9. **DR**: local PG16 restore drill = **preliminary evidence** only. M5 sign-off requires Sumopod backup/PITR
+   confirmation and a measured restore against RPO 15 min / RTO 4 h; until then the gate stays open.
+10. **Financial acceptance**: fixture tests execute the **real OMS services against PostgreSQL** (quotes→orders→
+    payments→shipments→settlements→refunds) and compare resulting ledger lines (account, debit, credit) to
+    `docs/fixtures/journals.yaml`; the YAML balance check is only a sanity test.
+11. **Integration classification**: registry keeps two fields — `implementation_status` (`planned | mock_tested |
+    sandbox_verified | production_verified`) and `access_state` (`available | unsupported | not_authorized |
+    temporarily_unavailable | mocked | planned`). "Operationally ready" requires production_verified + available.
+12. **Reporting**: `docs/27-implementation-status.md` per milestone: commit SHA, CI run link/result, exact
+    pass/fail/skip counts + command, changed files, functional status vs external-verification status, open blockers,
+    evidence links.

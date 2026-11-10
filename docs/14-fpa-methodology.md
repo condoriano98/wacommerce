@@ -1,6 +1,6 @@
 # 14 — FP&A Methodology & Contribution Waterfall
 
-> Source of truth: `docs/00-plan.md` (V3.1, approved 2026-11-10). This file is the topic view of the listed sections.
+> Source of truth: `docs/00-plan.md` (canonical V3.1 specification incl. §27 normative corrections). This file is a topic view.
 
 
 ## 15. FP&A methodology (revised — P1)
@@ -23,9 +23,12 @@ failed-delivery rates; risk-adjusted bulk-buy evaluator (demand stability, savin
 downside, post-buy liquidity); stress tests. Decimal arithmetic, explicit rounding (HALF_UP to 1 rupiah for allocations,
 remainder to last line), IDR reporting currency, FX table if foreign currency appears.
 **Rp100M simulator**: Portfolios A/B/C, reserve, ad budgets, inventory buys, dropship working capital, fulfilment cost,
-settlement delays, fixed opex, test-and-learn acquisition cost, reinvestment/recovery. Stress: CPA↑, CVR↓, returns↑, COD
-delay↑, supplier cost↑, sell-through↓, ad underperformance, integration outage. Outputs per portfolio and consolidated:
-profit, liquidity path, shortfall probability/date, capital recovery horizon, capital productivity. Advisory only.
+settlement delays, fixed opex, test-and-learn acquisition cost, reinvestment/recovery. Stress (correction 8): S1 CPA
++30/+60%, S2 CVR −25%, S3 returns ×2, S4 COD delay +7/+14d, S5 supplier cost +10/+20%, S6 sell-through −40%, S7 ROAS −35%,
+S8 channel outage 7d, S9 marketplace settlement delay +14d with platform fee +2pp; "combined downside" preset
+(S1+S2+S4+S5). Outputs per portfolio and consolidated (deterministic): profit, liquidity path, minimum cash and shortfall
+date, capital recovery horizon, capital productivity; base case reconciles to ledger actuals for elapsed periods.
+Probabilities (Monte Carlo) only after distributions are documented and validated. Advisory only.
 **Close & audit**: `accounting_periods` (open → soft close → closed), `fpa_snapshots` versioned, adjustment journals,
 restatement only via adjustments with approval, effective-dated allocations, separate operational vs accounting
 timestamps, immutable journals/audit.

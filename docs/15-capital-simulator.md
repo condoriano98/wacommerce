@@ -26,7 +26,7 @@ Weekly time steps over 26 weeks, per portfolio (A, B, C) and consolidated.
   cash timing from settlement delays; inventory cash out at purchase and cash in at settlement; dropship supplier cash
   out at purchase; commitments consume mandates.
 - **Outputs**: P&L by week; cash balance path; minimum cash and the week it occurs; probability of breaching the
-  reserve (Monte Carlo over CPA, CVR, returns and delays); capital recovery horizon; contribution per Rp committed;
+  reserve (Monte Carlo only after distributions are documented and validated — ADR-017; until then deterministic minimum-cash and shortfall date); capital recovery horizon; contribution per Rp committed;
   working capital tied up; recommendation list (scale / hold / cut / switch fulfilment / bulk-buy) with rationale.
 
 ## Stress scenarios
@@ -41,7 +41,8 @@ Weekly time steps over 26 weeks, per portfolio (A, B, C) and consolidated.
 | Sell-through slows | −40% |
 | Ad underperformance | ROAS −35% |
 | Integration outage | one channel offline 7 days (orders lost, costs continue) |
-| Combined downside | CPA +30%, CVR −15%, delay +7d, supplier +10% |
+| S9 Marketplace settlement delay + fee increase | payout delay +14 days and platform fee +2 percentage points |
+| Preset: combined downside (not a scenario number) | S1 +30%, S2 −15%, S4 +7d, S5 +10% together |
 
 ## Bulk-buy evaluator (risk-adjusted)
 Recommend switching a dropship SKU to owned stock only if all hold: delivered demand is stable (coefficient of variation
@@ -51,5 +52,5 @@ reserve under the combined downside; downside loss (unsold stock at salvage) is 
 A low supplier price alone is never enough.
 
 ## Status
-**Planned** (M3). The simulator is deterministic for the base case, with seeded Monte Carlo for distributions so results
-are reproducible.
+**Planned** (M3). The simulator is deterministic and reconciles its base case to ledger actuals for elapsed periods. Monte
+Carlo is Planned behind a flag (ADR-017).

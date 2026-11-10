@@ -1,6 +1,6 @@
-# 23 — Contradiction Register (V3.0 → V3.1)
+# 23 — Contradiction Register
 
-> Source of truth: `docs/00-plan.md` (V3.1, approved 2026-11-10). This file is the topic view of the listed sections.
+> Source of truth: `docs/00-plan.md` (canonical V3.1 specification incl. §27 normative corrections). This file is a topic view.
 
 
 ## 21. Contradiction register (resolved)
@@ -21,3 +21,11 @@
 | C12 | Identity scope | identities unique per brand | per identity domain + provider (§5) |
 | C13 | Inventory at shipment | stock reduced at ship but GL inventory until delivery | Goods in transit 1250 (§9) |
 | C14 | Plan §1 "Payments DOKU…to verify" vs adapters described as implemented | DOKU adapter not built | G-DOKU gate (§6) |
+| C15 | Migration strategy | ADR-013 "rebaseline 0001–0003" | Forward-only migrations 0004+ with expand/backfill/contract (§27.2) |
+| C16 | Unverified manual payments | Draft "1015 payments pending bank verification" asset | No entry/asset on receipt or attestation; 1105 receivable only for approved release-on-attestation (§27.3) |
+| C17 | Reporting identity | GUC/`ALTER ROLE SET` identity; `current_user` mapping | `session_user` → `reporting_principals`, GUCs ignored for reporting roles (§27.7) |
+| C18 | Simulator probabilities | "seeded Monte Carlo" in M3 | Deterministic first; Monte Carlo flag-gated until assumptions validated (§27.8) |
+| C19 | Ninth stress scenario | Undefined / "combined downside" counted as #9 | S9 = marketplace settlement delay +14d with fee +2pp; combined downside is a preset (§27.8) |
+| C20 | Partial order visibility | Order header visible if any line visible | Header only with org scope or full-line visibility; `order_slices` otherwise (§27.4) |
+| C21 | DB role cutover | Remove `oms_system` in one step | Expand/contract with `OMS_DB_ROLE_MODE` flag (§27 round 3) |
+| C22 | Acceptance-test ownership | Tests #11/#13 shared by two milestones | Split into 11a/11b and 13a/13b with single owners (§20) |

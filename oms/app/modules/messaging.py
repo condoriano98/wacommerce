@@ -145,8 +145,8 @@ def capture_referral(session: Session, account: PlatformAccount, customer_id, co
 
 def link_landing_session(session: Session, account, customer_id, conversation_id, m: InboundMessage,
                          code: str) -> None:
-    ls = session.scalars(select(LandingSession).where(LandingSession.ref_code == code,
-                                                      LandingSession.organization_id == account.organization_id)).first()
+    ls = session.scalars(select(LandingSession).where(
+        LandingSession.ref_code == code, LandingSession.organization_id == account.organization_id)).first()
     if ls is None:
         return  # unknown code: stays unattributed, never fabricated
     session.execute(insert(CustomerAttribution).values(

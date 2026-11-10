@@ -1,12 +1,12 @@
 # 12 — Payments, Settlement & Reconciliation
 
-> Source of truth: `docs/00-plan.md` (V3.1, approved 2026-11-10). This file is the topic view of the listed sections.
+> Source of truth: `docs/00-plan.md` (canonical V3.1 specification incl. §27 normative corrections). This file is a topic view.
 
 
 ## 16. Payments (revised)
 
 DOKU payment links (adapter after G-DOKU verification); notification = trigger → status re-check via API → capture;
-manual transfer reported → attested → bank_matched; COD per F2; partial refunds per item allocation; payment fees as
+manual transfer reported → attested → bank_matched (receipts never debit bank; F3a/F3b); COD per F2; partial refunds per item allocation; payment fees as
 allocations; idempotent notifications; mismatches → `payment_mismatch` case.
 
 ## 11. Reconciliation and exceptions (revised — P0.6)

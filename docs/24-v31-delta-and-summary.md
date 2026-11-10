@@ -1,6 +1,6 @@
-# 24 — V3.0 → V3.1 Architecture Delta & Executive Summary
+# 24 — V3.0 → V3.1 Delta & Executive Summary
 
-> Source of truth: `docs/00-plan.md` (V3.1, approved 2026-11-10). This file is the topic view of the listed sections.
+> Source of truth: `docs/00-plan.md` (canonical V3.1 specification incl. §27 normative corrections). This file is a topic view.
 
 
 ## A. V3.0 → V3.1 Architecture Delta
@@ -15,7 +15,7 @@
 | D6 | Customer identities unique per brand | BSUID is scoped to the Meta business; marketplace buyer IDs to the shop | `customer_identities UNIQUE(identity_domain_id, provider, identity_type, value)`; internal immutable customer UUIDs | `customers`, `messaging` | Identity domain backfill | P0 | Same phone in two businesses → two customers; same BSUID twice → one |
 | D7 | Chatwoot WhatsApp inbox proxy + "reassert webhook" cron (V3.0), then R1 API-channel | Competing ownership; echo loops undefined | **OMS sole Meta owner**, Chatwoot API-channel inbox, message mapping table with origin, echo suppression, raw-event persistence before ack, async processing/replay | `messaging`, `integrations/chatwoot`, n8n | `wa_events`, `message_mappings`; remove reassert job | P0 | E2E: no duplicate sends, no loops, handoff works, replay idempotent |
 | D8 | Capital reallocation executed as cash journals (Dr Cash/Cr 3100) | Manufactures bank movements; inflates assets | **Management capital ledger** (mandates, allocations, commitments) separate from GL; real transfers only between legal-entity bank accounts as intercompany journals | `capital` (new), `finance` | Remove cash postings from reallocation; new tables | P0 | Reallocating Rp10M changes mandates, GL unchanged |
-| D9 | Manual transfer "verified" by a human from receipt → paid | Screenshot ≠ settlement | Payment states `reported → attested → bank_matched`; release policy configurable (default: finance attestation with bank reference releases fulfilment; reconciliation stays open until bank line matched; ageing exception at T+2 business days) | `payments`, `reconciliation` | New payment states, `bank_statement_lines` | P0 | Receipt alone never sets `bank_matched`; unmatched ages into exception |
+| D9 | Manual transfer "verified" by a human from receipt → paid | Screenshot ≠ settlement | Payment states `reported → attested → bank_matched`; receipts/attestations post nothing; default: fulfil only after bank match; optional approval-backed "release on attestation" posts revenue to 1105 receivable pending verification (correction 3); ageing exception at T+2 business days | `payments`, `reconciliation` | New payment states, `bank_statement_lines` | P0 | Receipt alone never sets `bank_matched`; unmatched ages into exception |
 | D10 | Reconciliation implicit in settlements table | No expected/actual/evidence/ageing model | **Reconciliation module**: runs, items (expected, actual, diff, evidence, operator, class, ageing, exposure, approvals) for DOKU, bank, Biteship COD, marketplaces, suppliers, stock counts, ads | `reconciliation` (new) | New tables | P0 | Every money movement traceable event → journal → settlement evidence |
 | D11 | ADR-003 dropped Procrastinate for a custom SKIP LOCKED dispatcher | V3.1 stack retains Procrastinate | **Transactional outbox table retained** (atomic with business writes) + **Procrastinate** as executor (relay, leases, retries, periodic jobs, dead letters) | `core/outbox`, worker | Add procrastinate schema migration | P1 | Kill worker mid-job → job re-leased, effect applied once |
 | D12 | Exceptions as cases (R4) | Not tied to reconciliation/ageing/exposure | Cases link to reconciliation items, carry financial exposure, ageing buckets, SLA, approval history | `exceptions` | Columns added | P0 | Exposure totals on dashboard equal open reconciliation differences |
@@ -46,8 +46,8 @@
 6. **Consistency**: V3.1 is internally consistent after the contradiction register is applied; ready for phased
    implementation gated by M0.
 7. **First milestone**: **M0 — Architecture & Provider Verification**: write the §23 documentation set, journal fixtures
-   F1–F12 as executable YAML with a balance checker, ERD and ADRs, resolve G-DOKU/G-BS/G-CW1/G-PROC/G-MB1, request
-   accountant input (G-ACC1/G-TAX1); then M1 begins with the V3.1 baseline migration and the RLS negative test suite.
+   F1–F12 (F3a/F3b) as executable YAML with a balance checker, ERD and ADRs, work G-DOKU/G-BS/G-CW1/G-PROC, request
+   accountant input (G-ACC1/G-TAX1); then M1 begins with forward migration 0004 (expand) and the RLS negative suite.
 
 ## 24. Current implementation status and refactor impact
 

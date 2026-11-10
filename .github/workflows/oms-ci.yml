@@ -4,6 +4,15 @@ on:
   pull_request:
     paths:
       - "oms/**"
+      - "docs/fixtures/**"
+      - ".github/workflows/oms-ci.yml"
+  push:
+    branches:
+      - "impl/**"
+      - "claude/**"
+    paths:
+      - "oms/**"
+      - "docs/fixtures/**"
       - ".github/workflows/oms-ci.yml"
   workflow_dispatch:
 
@@ -49,7 +58,7 @@ jobs:
       - name: Install OMS and test tools
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e . pytest ruff respx testcontainers
+          python -m pip install -e . pytest ruff respx pyyaml
       - name: Compile application and tests
         run: python -m compileall -q app tests
       - name: Check Python lint

@@ -1,6 +1,6 @@
 # 04 — Integration Capability Registry & Provider Verification
 
-> Source of truth: `docs/00-plan.md` (V3.1, approved 2026-11-10). This file is the topic view of the listed sections.
+> Source of truth: `docs/00-plan.md` (canonical V3.1 specification incl. §27 normative corrections). This file is a topic view.
 
 
 ## 6. Integration Capability Registry & provider verification
