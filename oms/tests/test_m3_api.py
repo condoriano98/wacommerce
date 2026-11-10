@@ -17,7 +17,10 @@ def test_fpa_api_end_to_end(tenant, client):
     h = tenant.headers("owner")
     r = client.get("/fpa/waterfall", headers=h, params={"legal_entity_id": str(tenant.legal_entity_id)})
     assert r.status_code == 200 and float(r.json()["gross_sales"]) > 0
-    assert client.get("/fpa/waterfall", headers=tenant.headers("pm_b")).json()["gross_sales"] == "0"
+    # Portfolio B's own waterfall is empty (RLS); the consolidated view is org-scope only (remediation C1).
+    assert client.get("/fpa/waterfall", headers=tenant.headers("pm_b"),
+                      params={"portfolio_id": str(tenant.portfolios["B"])}).json()["gross_sales"] == "0"
+    assert client.get("/fpa/waterfall", headers=tenant.headers("pm_b")).status_code == 403
     assert client.get("/fpa/waterfall", headers=h, params={"level": "L1"}).json()["rows"]
     tie = client.get("/fpa/tie-out", headers=tenant.headers("finance"),
                      params={"legal_entity_id": str(tenant.legal_entity_id)}).json()

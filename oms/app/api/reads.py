@@ -59,6 +59,7 @@ def capabilities(session: DbSession, principal: CurrentPrincipal) -> list[dict]:
 
 @router.get("/capital/summary")
 def capital_summary(session: DbSession, principal: CurrentPrincipal) -> list[dict]:
+    principal.require_any_scope("fpa.read")  # capital data is financial (remediation C1); rows are RLS-limited
     out = []
     for p in session.scalars(select(Portfolio).order_by(Portfolio.code)):
         cats = {}

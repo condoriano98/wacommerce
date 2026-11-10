@@ -28,7 +28,8 @@ def _bounds(start: date | None, end: date | None) -> tuple[date, date]:
 def get_waterfall(session: DbSession, principal: CurrentPrincipal, start: date | None = None, end: date | None = None,
                   legal_entity_id: uuid.UUID | None = None, portfolio_id: uuid.UUID | None = None,
                   level: str = "L3") -> dict:
-    principal.require("fpa.read", portfolio_id) if portfolio_id else None
+    # No portfolio and no entity = consolidated: org-wide scope required (remediation C1).
+    principal.require_financial_scope("fpa.read", portfolio_id=portfolio_id, legal_entity_id=legal_entity_id)
     s, e = _bounds(start, end)
     if level == "L1":
         return {"period": [str(s), str(e)], "rows": waterfall.l1(session, s, e, legal_entity_id)}
@@ -56,9 +57,15 @@ def close(legal_entity_id: uuid.UUID, period_start: date, session: DbSession, pr
 
 
 @router.get("/snapshots")
-def list_snapshots(session: DbSession, principal: CurrentPrincipal, period_start: date) -> list[dict]:
-    rows = session.scalars(select(FpaSnapshot).where(
-        FpaSnapshot.period_start == periods.month_bounds(period_start)[0]).order_by(FpaSnapshot.version)).all()
+def list_snapshots(session: DbSession, principal: CurrentPrincipal, period_start: date,
+                   portfolio_id: uuid.UUID | None = None, legal_entity_id: uuid.UUID | None = None) -> list[dict]:
+    principal.require_financial_scope("fpa.read", portfolio_id=portfolio_id, legal_entity_id=legal_entity_id)
+    q = select(FpaSnapshot).where(FpaSnapshot.period_start == periods.month_bounds(period_start)[0])
+    if portfolio_id is not None:
+        q = q.where(FpaSnapshot.portfolio_id == portfolio_id)
+    if legal_entity_id is not None:
+        q = q.where(FpaSnapshot.legal_entity_id == legal_entity_id)
+    rows = session.scalars(q.order_by(FpaSnapshot.version)).all()
     return [{"id": str(x.id), "scope": x.scope_type, "portfolio_id": str(x.portfolio_id) if x.portfolio_id else None,
              "version": x.version, "sha256": x.sha256, "reason": x.reason, "payload": x.payload} for x in rows]
 
@@ -85,7 +92,7 @@ def scenarios(principal: CurrentPrincipal) -> dict:
 
 @router.get("/cash-forecast")
 def cash_forecast(session: DbSession, principal: CurrentPrincipal, legal_entity_id: uuid.UUID | None = None) -> dict:
-    principal.require("fpa.read")
+    principal.require_financial_scope("fpa.read", legal_entity_id=legal_entity_id)
     return cash.forecast_13w(session, legal_entity_id)
 
 
