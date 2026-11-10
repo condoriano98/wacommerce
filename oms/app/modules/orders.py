@@ -185,6 +185,7 @@ def cancel_item_qty(session: Session, order: Order, item: OrderItem, qty: int, *
     if order.payment_status in ("captured", "bank_matched"):
         posting.canceled_before_shipment(session, order, item, amount, f"{item.id}:{item.qty_canceled}")
     posting.reallocate_shipping_after_cancel(session, order)
+    fulfillment.refresh_cod_amounts(session, order)
     _event(session, order, order.status, actor_type=actor_type, actor_user_id=actor_user_id, reason=reason,
            data={"canceled_item": str(item.id), "qty": qty})
     derive_status(session, order)

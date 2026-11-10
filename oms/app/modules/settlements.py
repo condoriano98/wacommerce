@@ -147,9 +147,10 @@ def _expect_settlement(session: Session, data: dict) -> None:
     order, sh = data["order"], data["shipment"]
     g = session.get(FulfillmentGroup, sh.group_id)
     if order.payment_method == "cod":
+        # Only this shipment's own deductions (keyed by shipment id), never other shipments of the same order.
         deducted = Decimal(session.scalar(select(func.coalesce(func.sum(LedgerEntry.credit), 0)).where(
             LedgerEntry.order_id == order.id, LedgerEntry.account_code == A.COD_RECEIVABLE,
-            LedgerEntry.source_type.in_(("cod_fee", "carrier_cost")))))
+            LedgerEntry.source_type.in_(("cod_fee", "carrier_cost")), LedgerEntry.source_id == str(sh.id))))
         reconciliation.expect(session, order.organization_id, "cod", str(sh.id), sh.cod_amount - deducted,
                               portfolio_id=g.portfolio_id)
     elif order.payment_method == "marketplace":
@@ -219,7 +220,8 @@ def receive_return(session: Session, principal: Principal, order_id: uuid.UUID, 
     if qty <= 0 or item.qty_returned + qty > item.qty_delivered:
         raise HTTPException(status.HTTP_409_CONFLICT, "cannot return more than delivered")
     item.qty_returned += qty
-    unit_cost = item.unit_cost or Decimal("0")
+    # The exact cost of what was delivered for this line (per-warehouse allocations), not the last pickup's cost.
+    unit_cost = inventory.delivered_unit_cost(session, item.id) or item.unit_cost or Decimal("0")
     if unit_cost:
         inventory.restock_return(session, order.organization_id, portfolio_id=item.portfolio_id, sku_id=item.sku_id,
                                  warehouse_id=warehouse_id, qty=qty, unit_cost=unit_cost, order_id=order.id,

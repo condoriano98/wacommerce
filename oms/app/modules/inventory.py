@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.base import utcnow
-from app.models.inventory import InventoryBalance, InventoryMovement, InventoryReservation
+from app.models.inventory import InventoryBalance, InventoryMovement, InventoryReservation, ShipmentCostAllocation
 from app.modules.finance import accounts as A
 from app.modules.finance import posting
 from app.modules.finance.ledger import JournalLine, post_journal
@@ -124,14 +124,23 @@ def convert_quote_holds(session: Session, quote_id: uuid.UUID, order_id: uuid.UU
 
 
 def pick_from_reservations(session: Session, org_id: uuid.UUID, order_id: uuid.UUID, portfolio_id: uuid.UUID,
-                           sku_id: uuid.UUID, qty: int, reference: str) -> Decimal:
-    """Carrier pickup: consume order reservations, on_hand -> in_transit. Returns moving-average unit cost."""
-    reservations = session.scalars(select(InventoryReservation).join(
+                           sku_id: uuid.UUID, qty: int, reference: str, *, warehouse_id: uuid.UUID | None = None,
+                           shipment_id: uuid.UUID | None = None, shipment_item_id: uuid.UUID | None = None,
+                           order_item_id: uuid.UUID | None = None) -> Decimal:
+    """Carrier pickup: consume this order's reservations **in the shipment's warehouse**, on_hand -> in_transit.
+
+    Each balance consumed is recorded in ``shipment_cost_allocations`` with its own moving-average cost, so goods in
+    transit, COGS and a failed-delivery restoration use the exact acquisition cost (remediation B2). Returns the total
+    cost of the quantity picked."""
+    stmt = select(InventoryReservation).join(
         InventoryBalance, InventoryBalance.id == InventoryReservation.balance_id).where(
         InventoryReservation.order_id == order_id, InventoryReservation.status == "active",
         InventoryReservation.portfolio_id == portfolio_id, InventoryBalance.sku_id == sku_id)
-        .with_for_update()).all()
-    remaining, cost = qty, Decimal("0")
+    if warehouse_id is not None:
+        stmt = stmt.where(InventoryBalance.warehouse_id == warehouse_id)
+    reservations = session.scalars(stmt.order_by(InventoryReservation.balance_id, InventoryReservation.id)
+                                   .with_for_update()).all()
+    remaining, total = qty, Decimal("0")
     for r in reservations:
         if remaining == 0:
             break
@@ -140,21 +149,36 @@ def pick_from_reservations(session: Session, org_id: uuid.UUID, order_id: uuid.U
         bal.reserved -= take
         bal.on_hand -= take
         bal.in_transit += take
-        cost = bal.avg_unit_cost
+        amount = posting.q(bal.avg_unit_cost * take)
+        total += amount
         r.qty -= take
         if r.qty == 0:
             r.qty, r.status = take, "consumed"
         session.add(InventoryMovement(organization_id=org_id, portfolio_id=portfolio_id, balance_id=bal.id,
                                       movement_type="ship", qty=-take, unit_cost=bal.avg_unit_cost,
                                       reference_type="shipment", reference_id=reference))
+        if shipment_item_id is not None:
+            session.add(ShipmentCostAllocation(
+                organization_id=org_id, portfolio_id=portfolio_id, shipment_id=shipment_id,
+                shipment_item_id=shipment_item_id, order_item_id=order_item_id, balance_id=bal.id,
+                warehouse_id=bal.warehouse_id, qty=take, unit_cost=bal.avg_unit_cost, amount=amount))
         remaining -= take
     if remaining:
         raise InsufficientStock(f"no reserved stock left for {remaining} units")
     session.flush()
-    return cost
+    return total
+
+
+def allocations_for(session: Session, shipment_item_id: uuid.UUID, status_: str | None = "in_transit"
+                    ) -> list[ShipmentCostAllocation]:
+    stmt = select(ShipmentCostAllocation).where(ShipmentCostAllocation.shipment_item_id == shipment_item_id)
+    if status_:
+        stmt = stmt.where(ShipmentCostAllocation.status == status_)
+    return list(session.scalars(stmt.order_by(ShipmentCostAllocation.balance_id).with_for_update()))
 
 
 def _transit_balance(session: Session, portfolio_id, sku_id) -> InventoryBalance:
+    """Legacy fallback for shipments picked before cost allocations existed (migration 0020)."""
     bal = session.scalars(select(InventoryBalance).where(
         InventoryBalance.portfolio_id == portfolio_id, InventoryBalance.sku_id == sku_id,
         InventoryBalance.in_transit > 0).with_for_update()).first()
@@ -163,20 +187,52 @@ def _transit_balance(session: Session, portfolio_id, sku_id) -> InventoryBalance
     return bal
 
 
-def deliver_in_transit(session: Session, portfolio_id, sku_id, qty: int) -> None:
-    bal = _transit_balance(session, portfolio_id, sku_id)
-    bal.in_transit -= qty
+def deliver_in_transit(session: Session, portfolio_id, sku_id, qty: int,
+                       allocations: list[ShipmentCostAllocation] | None = None) -> None:
+    """Delivered: the exact balances the shipment was picked from leave ``in_transit``."""
+    if not allocations:
+        bal = _transit_balance(session, portfolio_id, sku_id)
+        bal.in_transit -= qty
+        return
+    for a in allocations:
+        bal = session.get(InventoryBalance, a.balance_id, with_for_update=True)
+        bal.in_transit -= a.qty
+        a.status = "delivered"
 
 
-def return_in_transit(session: Session, org_id, portfolio_id, sku_id, qty: int, reference: str) -> Decimal:
-    """Failed delivery: goods come back to the warehouse (in_transit -> on_hand)."""
-    bal = _transit_balance(session, portfolio_id, sku_id)
-    bal.in_transit -= qty
-    bal.on_hand += qty
-    session.add(InventoryMovement(organization_id=org_id, portfolio_id=portfolio_id, balance_id=bal.id,
-                                  movement_type="return", qty=qty, unit_cost=bal.avg_unit_cost,
-                                  reference_type="rts", reference_id=reference))
-    return bal.avg_unit_cost
+def return_in_transit(session: Session, org_id, portfolio_id, sku_id, qty: int, reference: str,
+                      allocations: list[ShipmentCostAllocation] | None = None) -> Decimal:
+    """Failed delivery: goods come back to the warehouse they were picked from, at the cost they left with (the
+    balance's moving average is re-computed with that cost). Returns the total cost restored."""
+    if not allocations:
+        bal = _transit_balance(session, portfolio_id, sku_id)
+        bal.in_transit -= qty
+        bal.on_hand += qty
+        session.add(InventoryMovement(organization_id=org_id, portfolio_id=portfolio_id, balance_id=bal.id,
+                                      movement_type="return", qty=qty, unit_cost=bal.avg_unit_cost,
+                                      reference_type="rts", reference_id=reference))
+        return posting.q(bal.avg_unit_cost * qty)
+    total = Decimal("0")
+    for a in allocations:
+        bal = session.get(InventoryBalance, a.balance_id, with_for_update=True)
+        value = bal.avg_unit_cost * bal.on_hand + a.amount
+        bal.in_transit -= a.qty
+        bal.on_hand += a.qty
+        bal.avg_unit_cost = (value / bal.on_hand).quantize(Decimal("0.0001"))
+        a.status = "returned"
+        total += a.amount
+        session.add(InventoryMovement(organization_id=org_id, portfolio_id=portfolio_id, balance_id=bal.id,
+                                      movement_type="return", qty=a.qty, unit_cost=a.unit_cost,
+                                      reference_type="rts", reference_id=reference))
+    return total
+
+
+def delivered_unit_cost(session: Session, order_item_id: uuid.UUID) -> Decimal | None:
+    """Weighted cost per unit of what was actually delivered for an order line (for after-delivery returns)."""
+    row = session.execute(select(func.sum(ShipmentCostAllocation.amount), func.sum(ShipmentCostAllocation.qty))
+                          .where(ShipmentCostAllocation.order_item_id == order_item_id,
+                                 ShipmentCostAllocation.status == "delivered")).one()
+    return (Decimal(row[0]) / row[1]).quantize(Decimal("0.0001")) if row[1] else None
 
 
 def restock_return(session: Session, org_id: uuid.UUID, *, portfolio_id, sku_id, warehouse_id, qty: int,

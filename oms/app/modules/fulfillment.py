@@ -25,7 +25,7 @@ from app.models.fulfillment import (
     ShipmentItem,
 )
 from app.models.governance import OutboxMessage
-from app.models.inventory import InventoryBalance, InventoryReservation
+from app.models.inventory import InventoryBalance, InventoryReservation, ShipmentCostAllocation
 from app.models.orders import Order, OrderItem, Payment
 from app.models.org import Portfolio, RiskPolicy
 from app.modules import events, exceptions, inventory, orders
@@ -240,14 +240,53 @@ def mark_packed(session: Session, principal: Principal, group_id: uuid.UUID, pac
     return g
 
 
+def cod_collectibles(session: Session, order: Order) -> dict[uuid.UUID, Decimal]:
+    """Customer-collectible COD amount per fulfilment group (remediation B3).
+
+    For every order line, its collectible amount (goods for the live, non-canceled quantity + its shipping-income
+    allocation) is split across the groups holding that line in proportion to their quantities, with the rounding
+    remainder on the last group (deterministic order). The sum over groups equals the order's collectible amount
+    exactly; shipping is never charged twice when a line is split across warehouses."""
+    out: dict[uuid.UUID, Decimal] = {}
+    if order.payment_method != "cod":
+        return out
+    rows = session.execute(select(FulfillmentGroupItem, FulfillmentGroup).join(
+        FulfillmentGroup, FulfillmentGroup.id == FulfillmentGroupItem.group_id).where(
+        FulfillmentGroup.order_id == order.id).order_by(FulfillmentGroup.created_at, FulfillmentGroup.id)).all()
+    by_item: dict[uuid.UUID, list] = {}
+    for gi, g in rows:
+        out.setdefault(g.id, Decimal("0"))
+        by_item.setdefault(gi.order_item_id, []).append(gi)
+    for item_id, gis in by_item.items():
+        item = session.get(OrderItem, item_id)
+        live = item.qty - item.qty_canceled
+        if live <= 0:
+            continue
+        collectible = posting.item_value(item, live) + posting.shipping_allocation(session, item)
+        for gi, share in zip(gis, posting.split(collectible, [Decimal(gi.qty) for gi in gis]), strict=True):
+            out[gi.group_id] += share
+    return out
+
+
 def group_cod_amount(session: Session, g: FulfillmentGroup) -> Decimal:
     order = session.get(Order, g.order_id)
+    return cod_collectibles(session, order).get(g.id, Decimal("0"))
+
+
+def refresh_cod_amounts(session: Session, order: Order) -> None:
+    """After a cancellation, re-split COD across groups. A shipment that is booked but not yet picked up gets the new
+    amount and a case (the carrier booking must be amended by a human; no automatic carrier call)."""
     if order.payment_method != "cod":
-        return Decimal("0")
-    gis = session.scalars(select(FulfillmentGroupItem).where(FulfillmentGroupItem.group_id == g.id)).all()
-    cod = sum((posting.item_value(session.get(OrderItem, gi.order_item_id), gi.qty) for gi in gis), Decimal("0"))
-    return cod + sum((posting.shipping_allocation(session, session.get(OrderItem, gi.order_item_id)) for gi in gis),
-                     Decimal("0"))
+        return
+    amounts = cod_collectibles(session, order)
+    for sh in session.scalars(select(Shipment).where(Shipment.order_id == order.id, Shipment.status == "booked")):
+        new = amounts.get(sh.group_id, Decimal("0"))
+        if new != sh.cod_amount:
+            exceptions.open_case(session, order.organization_id, "manual_review", subject_type="shipment",
+                                 subject_id=str(sh.id), order_id=order.id, portfolio_id=sh.portfolio_id,
+                                 context={"reason": "COD amount changed after cancellation; amend carrier booking",
+                                          "old": str(sh.cod_amount), "new": str(new)})
+            sh.cod_amount = new
 
 
 def request_booking(session: Session, principal: Principal, group_id: uuid.UUID, approval_id: uuid.UUID, *,
@@ -332,9 +371,13 @@ CASE_FOR = {"on_hold": "delivery_failed", "courier_not_found": "delivery_failed"
 
 def _lines(session: Session, sh: Shipment, g: FulfillmentGroup) -> list[posting.ShippedLine]:
     out = []
-    for si in session.scalars(select(ShipmentItem).where(ShipmentItem.shipment_id == sh.id)):
+    for si in session.scalars(select(ShipmentItem).where(ShipmentItem.shipment_id == sh.id).order_by(ShipmentItem.id)):
+        recorded = session.scalar(select(func.sum(ShipmentCostAllocation.amount)).where(
+            ShipmentCostAllocation.shipment_item_id == si.id))
         out.append(posting.ShippedLine(session.get(OrderItem, si.order_item_id), si.qty, si.unit_cost or Decimal("0"),
-                                       owned=g.route in ("OWNED_STOCK_BITESHIP", "PLATFORM_MANAGED")))
+                                       owned=g.route in ("OWNED_STOCK_BITESHIP", "PLATFORM_MANAGED"),
+                                       cost_amount=Decimal(recorded) if recorded is not None else None,
+                                       shipment_item_id=si.id))
     return out
 
 
@@ -367,14 +410,17 @@ def apply_shipment_event(session: Session, sh: Shipment, carrier_status: str, oc
     g = session.get(FulfillmentGroup, sh.group_id)
     lines = _lines(session, sh, g)
     if carrier_status == "picked":
-        for ln, si in zip(lines, session.scalars(select(ShipmentItem).where(ShipmentItem.shipment_id == sh.id)),
-                          strict=True):
-            if g.route in ("OWNED_STOCK_BITESHIP", "PLATFORM_MANAGED") and _has_reservation(session, order, ln.item):
-                si.unit_cost = inventory.pick_from_reservations(session, order.organization_id, order.id,
-                                                                ln.item.portfolio_id, ln.item.sku_id, ln.qty,
-                                                                str(sh.id))
-                ln.unit_cost = si.unit_cost
-                ln.item.unit_cost = si.unit_cost  # moving-average cost at pickup (used for returns)
+        for ln in lines:
+            si = session.get(ShipmentItem, ln.shipment_item_id)
+            if g.route in ("OWNED_STOCK_BITESHIP", "PLATFORM_MANAGED") and _has_reservation(
+                    session, order, ln.item, g.warehouse_id):
+                cost = inventory.pick_from_reservations(
+                    session, order.organization_id, order.id, ln.item.portfolio_id, ln.item.sku_id, ln.qty,
+                    str(sh.id), warehouse_id=g.warehouse_id, shipment_id=sh.id, shipment_item_id=si.id,
+                    order_item_id=ln.item.id)
+                ln.cost_amount = cost
+                si.unit_cost = ln.unit_cost = (cost / ln.qty).quantize(Decimal("0.0001"))
+                ln.item.unit_cost = si.unit_cost  # informational; returns use the recorded allocations
             ln.item.qty_shipped += ln.qty
         session.flush()
         posting.picked_up(session, order, str(sh.id), lines)
@@ -388,8 +434,9 @@ def apply_shipment_event(session: Session, sh: Shipment, carrier_status: str, oc
             apply_shipment_event(session, sh, "picked", occurred_at - timedelta(seconds=1), {"implied": True})
             lines = _lines(session, sh, g)
         for ln in lines:
-            if ln.owned and ln.unit_cost:
-                inventory.deliver_in_transit(session, ln.item.portfolio_id, ln.item.sku_id, ln.qty)
+            if ln.owned and ln.cost:
+                inventory.deliver_in_transit(session, ln.item.portfolio_id, ln.item.sku_id, ln.qty,
+                                             inventory.allocations_for(session, ln.shipment_item_id))
             ln.item.qty_delivered += ln.qty
         session.flush()
         posting.delivered(session, order, str(sh.id), lines, revenue_debit_account=_revenue_account(session, order))
@@ -409,11 +456,13 @@ def apply_shipment_event(session: Session, sh: Shipment, carrier_status: str, oc
         events.emit(session, "shipment_delivered", order=order, shipment=sh)
     elif carrier_status == "returned" and sh.status not in ("delivered",):
         for ln in lines:
-            if ln.owned and ln.unit_cost:
+            if ln.owned and ln.cost:
                 inventory.return_in_transit(session, order.organization_id, ln.item.portfolio_id, ln.item.sku_id,
-                                            ln.qty, str(sh.id))
+                                            ln.qty, str(sh.id), inventory.allocations_for(session, ln.shipment_item_id))
             ln.item.qty_shipped -= ln.qty
         session.flush()
+        if order.payment_method == "cod" and sh.shipping_cost:  # nothing collected: carrier cost becomes a payable
+            posting.cod_carrier_cost_reclass(session, order, str(sh.id), sh.shipping_cost, g.portfolio_id)
         return_cost = Decimal(str(raw.get("return_cost", sh.shipping_cost)))
         posting.returned_to_sender(session, order, str(sh.id), lines, Decimal("0"), return_cost, g.portfolio_id)
         g.status = "failed"
@@ -428,12 +477,14 @@ def apply_shipment_event(session: Session, sh: Shipment, carrier_status: str, oc
     return True
 
 
-def _has_reservation(session: Session, order: Order, item: OrderItem) -> bool:
-    return session.scalars(select(InventoryReservation.id).join(
+def _has_reservation(session: Session, order: Order, item: OrderItem, warehouse_id=None) -> bool:
+    stmt = select(InventoryReservation.id).join(
         InventoryBalance, InventoryBalance.id == InventoryReservation.balance_id).where(
         InventoryReservation.order_id == order.id, InventoryReservation.status == "active",
-        InventoryReservation.portfolio_id == item.portfolio_id, InventoryBalance.sku_id == item.sku_id)).first() \
-        is not None
+        InventoryReservation.portfolio_id == item.portfolio_id, InventoryBalance.sku_id == item.sku_id)
+    if warehouse_id is not None:
+        stmt = stmt.where(InventoryBalance.warehouse_id == warehouse_id)
+    return session.scalars(stmt).first() is not None
 
 
 def shipped_qty(session: Session, item: OrderItem, route: str) -> int:

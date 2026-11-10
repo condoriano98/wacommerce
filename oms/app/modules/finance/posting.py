@@ -115,16 +115,58 @@ def payment_captured(session: Session, order: Order, payment: Payment, amount: D
     _post(session, order.organization_id, le, "payment_captured", str(payment.id), lines)
 
 
+def _credited(session: Session, account: str, item_id, source_types: tuple[str, ...]) -> Decimal:
+    from sqlalchemy import func
+
+    return Decimal(session.scalar(select(func.coalesce(func.sum(LedgerEntry.credit - LedgerEntry.debit), 0)).where(
+        LedgerEntry.account_code == account, LedgerEntry.order_item_id == item_id,
+        LedgerEntry.source_type.in_(source_types))))
+
+
 def payment_bank_matched(session: Session, order: Order, payment: Payment, amount: Decimal) -> None:
-    """Manual transfer proven by a bank statement line. Clears 1105 if revenue was already recognised under an
-    approved release-on-attestation policy, otherwise creates the contract liability."""
+    """Manual transfer proven by a bank statement line (remediation B1). The verified amount is applied in order:
+
+    1. each line's **recognised** transfer receivable (1105), capped at its actual open balance — revenue already
+       recognised under an approved release-on-attestation policy (partial deliveries included);
+    2. any amount previously written off for that line and not yet recovered → recovery (Cr 5700, F13d);
+    3. the rest is a customer advance (2200) for the undelivered part, pro rata to each line's undelivered charge.
+
+    Dr 1000 equals the bank line. Nothing is credited beyond what is actually outstanding."""
     le = entity_for_order(session, order)
     items = _items(session, order.id)
-    open_1105 = {i.id: _balance(session, A.TRANSFER_RECEIVABLE, order_item_id=i.id) for i in items}
+    credits: dict = {i.id: [] for i in items}
+    remaining = amount
+    for item in items:  # 1. recognised receivable
+        open_1105 = max(_balance(session, A.TRANSFER_RECEIVABLE, order_item_id=item.id), ZERO)
+        take = min(remaining, open_1105)
+        if take > 0:
+            credits[item.id].append((A.TRANSFER_RECEIVABLE, take))
+            remaining -= take
+    for item in items:  # 2. recovery of written-off receivable
+        recoverable = _credited(session, A.TRANSFER_RECEIVABLE, item.id, ("credit_loss_write_off",)) - \
+            _credited(session, A.CREDIT_LOSSES, item.id, ("credit_loss_recovery", "payment_bank_matched"))
+        take = min(remaining, max(recoverable, ZERO))
+        if take > 0:
+            credits[item.id].append((A.CREDIT_LOSSES, take))
+            remaining -= take
+    if remaining > 0:  # 3. undelivered part → contract liability
+        weights = []
+        for item in items:
+            live = item.qty - item.qty_canceled
+            undelivered = max(live - item.qty_delivered, 0)
+            ship = shipping_allocation(session, item)
+            weights.append(item_value(item, undelivered) + (q(ship * undelivered / live) if live else ZERO))
+        if not sum(weights, ZERO):  # overpayment with nothing left to deliver: still an obligation to the customer
+            weights = [i.line_total for i in items]
+        for item, share in zip(items, split(remaining, weights), strict=True):
+            if share:
+                credits[item.id].append((A.CUSTOMER_ADVANCES, share))
     lines = []
-    for item, share in zip(items, split(amount, [i.line_total for i in items]), strict=True):
-        credit = A.TRANSFER_RECEIVABLE if open_1105[item.id] > 0 else A.CUSTOMER_ADVANCES
-        lines += [JournalLine(A.CASH, debit=share, **_kw(item, order)), JournalLine(credit, credit=share, **_kw(item, order))]
+    for item in items:
+        total = sum((c for _, c in credits[item.id]), ZERO)
+        if total:
+            lines.append(JournalLine(A.CASH, debit=total, **_kw(item, order)))
+            lines += [JournalLine(acc, credit=c, **_kw(item, order)) for acc, c in credits[item.id]]
     _post(session, order.organization_id, le, "payment_bank_matched", str(payment.id), lines)
 
 
@@ -155,14 +197,20 @@ class ShippedLine:
     qty: int
     unit_cost: Decimal
     owned: bool
+    cost_amount: Decimal | None = None  # exact cost picked (sum of shipment cost allocations), when recorded
+    shipment_item_id: uuid.UUID | None = None
+
+    @property
+    def cost(self) -> Decimal:
+        return self.cost_amount if self.cost_amount is not None else q(self.unit_cost * self.qty)
 
 
 def picked_up(session: Session, order: Order, shipment_id: str, lines_: list[ShippedLine]) -> None:
-    """Owned stock leaves the warehouse: Dr 1250 / Cr 1200 at cost."""
+    """Owned stock leaves the warehouse: Dr 1250 / Cr 1200 at the exact cost picked (per warehouse)."""
     lines = []
     for ln in lines_:
-        if ln.owned and ln.unit_cost:
-            amt = q(ln.unit_cost * ln.qty)
+        if ln.owned and ln.cost:
+            amt = ln.cost
             lines += [JournalLine(A.GOODS_IN_TRANSIT, debit=amt, **_kw(ln.item, order)),
                       JournalLine(A.INVENTORY, credit=amt, **_kw(ln.item, order))]
     _post(session, order.organization_id, entity_for_order(session, order), "picked_up", shipment_id, lines)
@@ -188,7 +236,7 @@ def delivered(session: Session, order: Order, shipment_id: str, lines_: list[Shi
         rev += [JournalLine(revenue_debit_account, debit=value + ship, **kw), JournalLine(A.REVENUE, credit=value, **kw)]
         if ship:
             rev.append(JournalLine(A.SHIPPING_INCOME, credit=ship, **kw))
-        cost = q(ln.unit_cost * ln.qty)
+        cost = ln.cost
         if cost:
             source = A.GOODS_IN_TRANSIT if ln.owned else A.SUPPLIER_PREPAYMENTS
             cogs += [JournalLine(A.COGS, debit=cost, **kw), JournalLine(source, credit=cost, **kw)]
@@ -214,8 +262,8 @@ def returned_to_sender(session: Session, order: Order, shipment_id: str, lines_:
     le = entity_for_order(session, order)
     back = []
     for ln in lines_:
-        if ln.owned and ln.unit_cost:
-            amt = q(ln.unit_cost * ln.qty)
+        if ln.owned and ln.cost:
+            amt = ln.cost
             back += [JournalLine(A.INVENTORY, debit=amt, **_kw(ln.item, order)),
                      JournalLine(A.GOODS_IN_TRANSIT, credit=amt, **_kw(ln.item, order))]
     _post(session, order.organization_id, le, "returned_to_warehouse", shipment_id, back)
@@ -224,6 +272,14 @@ def returned_to_sender(session: Session, order: Order, shipment_id: str, lines_:
         JournalLine(A.SHIPPING_EXPENSE, debit=outbound_cost, **kw),
         JournalLine(A.RETURN_LOSSES, debit=return_cost, **kw),
         JournalLine(A.CARRIER_PAYABLES, credit=outbound_cost + return_cost, **kw)])
+
+
+def cod_carrier_cost_reclass(session: Session, order: Order, shipment_id: str, amount: Decimal, portfolio_id) -> None:
+    """Failed COD delivery: nothing was collected, so the carrier cost accrued against the COD receivable at pickup
+    is owed to the carrier instead (Dr 1100 / Cr 2010). Keeps 1100 from going negative."""
+    kw = {"portfolio_id": portfolio_id, "order_id": order.id}
+    _post(session, order.organization_id, entity_for_order(session, order), "cod_carrier_cost_reclass", shipment_id, [
+        JournalLine(A.COD_RECEIVABLE, debit=amount, **kw), JournalLine(A.CARRIER_PAYABLES, credit=amount, **kw)])
 
 
 # --- settlements ----------------------------------------------------------------------------------------------

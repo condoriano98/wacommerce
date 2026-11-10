@@ -87,3 +87,19 @@ class StockCountLine(OrgMixin, Base):
     balance_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("inventory_balances.id"))
     system_qty: Mapped[int]
     counted_qty: Mapped[int]
+
+
+class ShipmentCostAllocation(OrgMixin, Base):
+    """Exact quantity and cost consumed from one inventory balance for one shipment line (remediation B2)."""
+
+    __tablename__ = "shipment_cost_allocations"
+    portfolio_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("portfolios.id"), index=True)
+    shipment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("shipments.id"), index=True)
+    shipment_item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("shipment_items.id"), index=True)
+    order_item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("order_items.id"), index=True)
+    balance_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("inventory_balances.id"))
+    warehouse_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("warehouses.id"))
+    qty: Mapped[int]
+    unit_cost: Mapped[Decimal] = mapped_column(Numeric(18, 4))
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    status: Mapped[str] = mapped_column(default="in_transit")  # in_transit | delivered | returned

@@ -118,6 +118,8 @@ TABLE_POLICIES: dict[str, tuple[str, str]] = {
     "reconciliation_items": (PORTFOLIO_STRICT, "portfolio_id"),
     "external_operations": ("org_scope_read", ""),
     "external_operation_attempts": ("org_scope_read", ""),
+    "journals": (ORG_SCOPE, ""),  # remediation A2 (0019): select org-scope only; inserts via claim_journal()
+    "shipment_cost_allocations": (PORTFOLIO, "portfolio_id"),  # remediation B2 (0020)
     "dead_letters": (ORG_SCOPE, ""),
     # M2 messaging (migration 0010)
     "wa_events": ("org_scope_read", ""),
