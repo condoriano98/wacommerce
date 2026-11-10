@@ -1,6 +1,7 @@
 """Import every model module so Alembic and the app see the full metadata."""
 
 from app.models import (  # noqa: F401
+    capital,
     catalog,
     customers,
     finance,

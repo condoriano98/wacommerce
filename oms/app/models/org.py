@@ -14,9 +14,41 @@ class Organization(IdMixin, Base):
     base_currency: Mapped[str] = mapped_column(default="IDR")
 
 
+class LegalEntity(OrgMixin, Base):
+    """A company that owns bank accounts, inventory and its own ledger (spec §5, D5)."""
+
+    __tablename__ = "legal_entities"
+    name: Mapped[str]
+    npwp: Mapped[str | None]
+    pkp_status: Mapped[str] = mapped_column(default="unknown")  # G-TAX1
+    accounting_framework: Mapped[str] = mapped_column(default="unconfirmed")  # G-ACC1: sak_ep | sak_emkm
+    base_currency: Mapped[str] = mapped_column(default="IDR")
+
+
+class BankAccount(OrgMixin, Base):
+    __tablename__ = "bank_accounts"
+    __table_args__ = (UniqueConstraint("legal_entity_id", "account_ref"),)
+    legal_entity_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("legal_entities.id"))
+    provider: Mapped[str]  # bank | ewallet | gateway | carrier_balance
+    institution: Mapped[str]
+    account_ref: Mapped[str]
+    ledger_account_code: Mapped[str] = mapped_column(default="1000")
+
+
+class ReportingPrincipal(Base):
+    """Maps a reporting *login role* (session_user) to an org identity (spec §27.7, ADR-016).
+    Not tenant data: no RLS; only the schema owner and definer functions can read it."""
+
+    __tablename__ = "reporting_principals"
+    db_role: Mapped[str] = mapped_column(primary_key=True)
+    organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"))
+    principal_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+
+
 class Brand(OrgMixin, Base):
     __tablename__ = "brands"
     name: Mapped[str]
+    legal_entity_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("legal_entities.id"))
 
 
 class User(OrgMixin, Base):
@@ -40,6 +72,7 @@ ROLES = (
     "cs_admin",
     "auditor",
     "ai_sales_agent",
+    "system_worker",
 )
 
 

@@ -6,7 +6,10 @@ Revises: 0001
 
 from alembic import op
 
-from app.core.rls import APPEND_ONLY, GLOBAL_READONLY, NO_APP_ACCESS, TABLE_POLICIES, visibility_expr
+from app.core.rls import GLOBAL_READONLY, visibility_expr
+from app.core.rls import V30_APPEND_ONLY as APPEND_ONLY
+from app.core.rls import V30_NO_APP_ACCESS as NO_APP_ACCESS
+from app.core.rls import V30_TABLE_POLICIES as TABLE_POLICIES
 
 revision = "0002"
 down_revision = "0001"

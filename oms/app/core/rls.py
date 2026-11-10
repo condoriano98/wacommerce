@@ -10,7 +10,9 @@ Policy kinds:
 * ``portfolio``         row's portfolio must be visible (also enforced on INSERT)
 * ``portfolio_shared``  NULL portfolio = org-level row visible to all members
 * ``portfolio_strict``  NULL portfolio = org-level row visible to org-wide roles only
-* ``order`` / ``customer`` / ``platform_account``  visibility derived from the parent entity.
+* ``order`` (V3.1): the order header and order-level children are visible only with org scope or when *every*
+  line is visible (spec §27.4); portfolio-limited users read ``order_slices``.
+* ``customer`` / ``platform_account`` / ``shipment``  visibility derived from the parent entity.
   INSERT only checks the organization because the parent's portfolio links are written in the
   same transaction; every read/update/delete is checked against visibility.
 """
@@ -93,6 +95,37 @@ TABLE_POLICIES: dict[str, tuple[str, str]] = {
     "settlements": (PLATFORM_ACCOUNT, "platform_account_id"),
     "settlement_lines": (PLATFORM_ACCOUNT, "platform_account_id"),
     "integration_errors": (PLATFORM_ACCOUNT_NULLABLE, "platform_account_id"),
+    # --- V3.1 (migration 0005) ---
+    "legal_entities": (ORG, ""),
+    "bank_accounts": (ORG_SCOPE, ""),
+    "identity_domains": (ORG, ""),
+    "capital_allocation_events": (PORTFOLIO, "portfolio_id"),
+    "capital_commitments": (PORTFOLIO, "portfolio_id"),
+    "commitment_consumptions": (PORTFOLIO, "portfolio_id"),
+    "integration_capabilities": (PLATFORM_ACCOUNT, "platform_account_id"),
+    "order_item_allocations": (PORTFOLIO, "portfolio_id"),
+    "payment_events": (ORDER, "order_id"),
+    "fulfillment_groups": (PORTFOLIO, "portfolio_id"),
+    "fulfillment_group_items": (PORTFOLIO, "portfolio_id"),
+    "shipment_items": (PORTFOLIO, "portfolio_id"),
+    "purchase_tasks": (PORTFOLIO, "portfolio_id"),
+    "purchase_lines": (PORTFOLIO, "portfolio_id"),
+    "stock_counts": (ORG, ""),
+    "stock_count_lines": (PORTFOLIO, "portfolio_id"),
+    "accounting_periods": (ORG, ""),
+    "bank_statement_lines": (ORG_SCOPE, ""),
+    "reconciliation_runs": (ORG_SCOPE, ""),
+    "reconciliation_items": (PORTFOLIO_STRICT, "portfolio_id"),
+    "external_operations": (ORG_SCOPE, ""),
+    "dead_letters": (ORG_SCOPE, ""),
+}
+
+# V3.1 overrides applied by migration 0005 (policies are dropped and recreated for these tables).
+SHIPMENT = "shipment"
+V31_OVERRIDES: dict[str, tuple[str, str]] = {
+    # Shipments belong to a single-portfolio fulfillment group; legacy rows (no portfolio) need full order visibility.
+    "shipments": (SHIPMENT, "id"),
+    "shipment_events": (SHIPMENT, "shipment_id"),
 }
 
 # Tables the application role can never modify after insert.
@@ -106,13 +139,15 @@ APPEND_ONLY = (
     "shipment_events",
     "conversion_delivery_logs",
     "supplier_observations",
+    "payment_events",
+    "capital_allocation_events",
 )
 
 # Global reference tables: readable by everyone, no tenant data.
 GLOBAL_READONLY = ("providers", "ledger_accounts")
 
 # No privileges at all for the application role.
-NO_APP_ACCESS = ("account_credentials",)
+NO_APP_ACCESS = ("account_credentials", "reporting_principals")
 
 ORG_MATCH = "organization_id = app_org()"
 
@@ -151,7 +186,21 @@ def visibility_expr(kind: str, col: str) -> tuple[str, str]:
         return f"{ORG_MATCH} and app_customer_visible({col})", ORG_MATCH
     if kind == PLATFORM_ACCOUNT:
         return f"{ORG_MATCH} and app_platform_account_visible({col})", ORG_MATCH
+    if kind == SHIPMENT:
+        return f"{ORG_MATCH} and app_shipment_visible({col})", ORG_MATCH
     if kind == PLATFORM_ACCOUNT_NULLABLE:
         e = f"{ORG_MATCH} and (({col} is null and app_has_org_scope()) or app_platform_account_visible({col}))"
         return e, ORG_MATCH
     raise ValueError(kind)
+
+# Frozen inputs for migration 0002 (V3.0). Migrations must not change meaning when this module evolves.
+V31_NEW_TABLES = (
+    "legal_entities", "bank_accounts", "identity_domains", "capital_allocation_events", "capital_commitments",
+    "commitment_consumptions", "integration_capabilities", "order_item_allocations", "payment_events",
+    "fulfillment_groups", "fulfillment_group_items", "shipment_items", "purchase_tasks", "purchase_lines",
+    "stock_counts", "stock_count_lines", "accounting_periods", "bank_statement_lines", "reconciliation_runs",
+    "reconciliation_items", "external_operations", "dead_letters",
+)
+V30_TABLE_POLICIES = {k: v for k, v in TABLE_POLICIES.items() if k not in V31_NEW_TABLES}
+V30_APPEND_ONLY = tuple(t for t in APPEND_ONLY if t not in V31_NEW_TABLES)
+V30_NO_APP_ACCESS = ("account_credentials",)
