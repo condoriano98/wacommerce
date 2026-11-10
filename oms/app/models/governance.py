@@ -165,6 +165,9 @@ class ExternalOperation(OrgMixin, Base):
     last_error: Mapped[str | None]
     sent_at: Mapped[datetime | None]
     confirmed_at: Mapped[datetime | None]
+    response: Mapped[dict] = mapped_column(default=dict)  # provider response summary (ids, waybill, url) — no secrets
+    subject_type: Mapped[str | None]
+    subject_id: Mapped[str | None]
 
 
 class DeadLetter(OrgMixin, Base):

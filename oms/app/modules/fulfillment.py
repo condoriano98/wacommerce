@@ -240,15 +240,74 @@ def mark_packed(session: Session, principal: Principal, group_id: uuid.UUID, pac
     return g
 
 
+def group_cod_amount(session: Session, g: FulfillmentGroup) -> Decimal:
+    order = session.get(Order, g.order_id)
+    if order.payment_method != "cod":
+        return Decimal("0")
+    gis = session.scalars(select(FulfillmentGroupItem).where(FulfillmentGroupItem.group_id == g.id)).all()
+    cod = sum((posting.item_value(session.get(OrderItem, gi.order_item_id), gi.qty) for gi in gis), Decimal("0"))
+    return cod + sum((posting.shipping_allocation(session, session.get(OrderItem, gi.order_item_id)) for gi in gis),
+                     Decimal("0"))
+
+
+def request_booking(session: Session, principal: Principal, group_id: uuid.UUID, approval_id: uuid.UUID, *,
+                    courier_company: str = "jne", courier_type: str = "reg") -> FulfillmentGroup:
+    """Queue a paid Biteship booking for a packed group. Paid bookings need an approved ``paid_shipment_booking``
+    approval (spec §14); the provider call itself runs in the worker under ADR-015 (no automatic re-booking)."""
+    from app.core.outbox import enqueue
+    from app.modules import approvals
+
+    g = _group_for_operator(session, principal, group_id)
+    if g.route != "OWNED_STOCK_BITESHIP" or g.status != "packed":
+        raise HTTPException(status.HTTP_409_CONFLICT, f"group is {g.status} ({g.route})")
+    approvals.require_approved(session, approval_id, "paid_shipment_booking", str(g.id))
+    g.status = "booking"
+    enqueue(session, g.organization_id, "biteship.create_order", f"book:{g.id}",
+            {"group_id": str(g.id), "courier_company": courier_company, "courier_type": courier_type})
+    return g
+
+
+@handler("biteship.create_order")
+def booking_job(session: Session, msg: OutboxMessage) -> None:
+    from app.core import external_ops
+    from app.integrations import factory
+    from app.integrations.biteship import BookingRequest
+
+    g = session.get(FulfillmentGroup, uuid.UUID(msg.payload["group_id"]), with_for_update=True)
+    if g is None or session.scalars(select(Shipment).where(Shipment.group_id == g.id)).first():
+        return
+    order = session.get(Order, g.order_id)
+    cod = group_cod_amount(session, g)
+    gis = session.scalars(select(FulfillmentGroupItem).where(FulfillmentGroupItem.group_id == g.id)).all()
+    req = BookingRequest(reference_id=f"grp-{g.id}", courier_company=msg.payload["courier_company"],
+                         courier_type=msg.payload["courier_type"], destination=dict(g.destination or {}),
+                         items=[{"order_item_id": str(gi.order_item_id), "quantity": gi.qty} for gi in gis],
+                         cod_amount=cod)
+    adapter = factory.carrier(None)
+    try:
+        resp = external_ops.execute(g.organization_id, "biteship", "create_order", req.reference_id,
+                                    lambda: adapter.create_order(req), lookup=None,
+                                    summary={"reference_id": req.reference_id, "cod_amount": str(cod)},
+                                    subject_type="fulfillment_group", subject_id=str(g.id), order_id=order.id,
+                                    portfolio_id=g.portfolio_id, exposure=Decimal(msg.payload.get("est_cost", "0")))
+    except external_ops.OperationUncertain:
+        g.status = "booking_uncertain"  # human checks the Biteship dashboard and resolves the case
+        return
+    except external_ops.Rejected:
+        g.status = "packed"
+        exceptions.open_case(session, g.organization_id, "manual_review", subject_type="fulfillment_group",
+                             subject_id=str(g.id), order_id=order.id, portfolio_id=g.portfolio_id,
+                             context={"reason": "carrier rejected booking"})
+        return
+    g.status = "packed"  # create_shipment moves it to booked
+    create_shipment(session, g, carrier="biteship", external_id=resp["ref"], waybill=resp.get("waybill_id"),
+                    shipping_cost=Decimal(resp.get("price") or "0"))
+
+
 def create_shipment(session: Session, g: FulfillmentGroup, *, carrier: str, external_id: str | None = None,
                     shipping_cost: Decimal = Decimal("0"), carrier_account_id=None, waybill: str | None = None) -> Shipment:
-    order = session.get(Order, g.order_id)
+    cod = group_cod_amount(session, g)
     gis = session.scalars(select(FulfillmentGroupItem).where(FulfillmentGroupItem.group_id == g.id)).all()
-    cod = Decimal("0")
-    if order.payment_method == "cod":
-        cod = sum((posting.item_value(session.get(OrderItem, gi.order_item_id), gi.qty) for gi in gis), Decimal("0"))
-        cod += sum((posting.shipping_allocation(session, session.get(OrderItem, gi.order_item_id)) for gi in gis),
-                   Decimal("0"))
     sh = Shipment(organization_id=g.organization_id, order_id=g.order_id, group_id=g.id, portfolio_id=g.portfolio_id,
                   carrier=carrier, external_id=external_id, waybill=waybill, status="booked", cod_amount=cod,
                   shipping_cost=shipping_cost, carrier_account_id=carrier_account_id, booked_at=utcnow())

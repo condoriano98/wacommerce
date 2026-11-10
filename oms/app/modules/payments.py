@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.core.audit import audit
 from app.core.authz import Principal
+from app.core.outbox import handler
 from app.models.base import utcnow
 from app.models.finance import BankStatementLine, LedgerEntry
 from app.models.orders import Order, OrderItem, Payment, PaymentEvent, PaymentNotification
@@ -48,6 +49,27 @@ def create_payment_link(session: Session, order: Order, *, provider: str, provid
     p = Payment(organization_id=order.organization_id, order_id=order.id, method="doku_link", provider=provider,
                 provider_ref=provider_ref, amount=order.total, payment_url=url, expires_at=expires_at)
     session.add(p)
+    return p
+
+
+def request_doku_link(session: Session, order: Order, *, expiry_minutes: int = 60) -> Payment:
+    """Create the pending payment and queue the provider call (ADR-015: invoice_number = idempotency key, reused on
+    every retry; the link URL is filled in by the ``doku.create_payment`` job once DOKU confirms)."""
+    from app.core.outbox import enqueue
+
+    if order.payment_method != "doku_link" or order.payment_status != "unpaid":
+        raise HTTPException(status.HTTP_409_CONFLICT, f"order payment is {order.payment_status}")
+    existing = session.scalars(select(Payment).where(Payment.order_id == order.id, Payment.status == "pending",
+                                                     Payment.provider == "doku")).first()
+    if existing:
+        return existing
+    pid = uuid.uuid4()
+    p = Payment(id=pid, organization_id=order.organization_id, order_id=order.id, method="doku_link",
+                provider="doku", provider_ref=f"INV-{pid.hex[:20].upper()}", amount=order.total,
+                evidence={"expiry_minutes": expiry_minutes})
+    session.add(p)
+    session.flush()
+    enqueue(session, order.organization_id, "doku.create_payment", f"doku:{p.id}", {"payment_id": str(p.id)})
     return p
 
 
@@ -212,3 +234,31 @@ def match_bank_lines(session: Session, principal: Principal) -> int:
 
 def today() -> date:
     return utcnow().date()
+
+
+@handler("doku.create_payment")
+def _create_doku_payment(session: Session, msg) -> None:
+    from app.core import external_ops
+    from app.integrations import factory
+    from app.integrations.doku import PaymentRequest
+
+    p = session.get(Payment, uuid.UUID(msg.payload["payment_id"]), with_for_update=True)
+    if p is None or p.payment_url or p.status != "pending":
+        return
+    provider = factory.payment_provider(None)
+    req = PaymentRequest(p.provider_ref, p.amount, int(p.evidence.get("expiry_minutes", 60)))
+    try:
+        resp = external_ops.execute(p.organization_id, "doku", "create_payment", p.provider_ref,
+                                    lambda: provider.create_payment(req),
+                                    lookup=lambda: provider.get_status(p.provider_ref),
+                                    summary={"invoice_number": p.provider_ref, "amount": str(p.amount)},
+                                    subject_type="payment", subject_id=str(p.id), order_id=p.order_id)
+    except external_ops.OperationUncertain as exc:  # never re-created automatically; a human resolves the case
+        p.evidence = {**p.evidence, "link_status": "uncertain", "external_operation_id": str(exc.operation_id)}
+        return
+    p.payment_url = resp.get("url")
+    if resp.get("expires_at"):
+        from datetime import datetime
+
+        p.expires_at = datetime.fromisoformat(resp["expires_at"])
+    p.evidence = {**p.evidence, "link_status": "created"}

@@ -56,6 +56,9 @@ PLAYBOOKS: dict[str, Playbook] = {
     "duplicate_order": Playbook("medium", "cs_admin", 8, ("merge", "keep_both", "cancel_duplicate"), {}, None),
     "oversold_marketplace": Playbook("critical", "portfolio_manager", 2, ("source_from_supplier", "cancel_on_platform"),
                                      {"source_from_supplier": "procurement_purchase"}, None),
+    # ADR-015: an external side effect whose outcome is unknown and cannot be looked up (e.g. Biteship booking after a
+    # timeout). A human checks the provider dashboard; the OMS never re-sends automatically.
+    "external_uncertain": Playbook("high", "finance_manager", 4, ("confirm_effect", "confirm_absent_and_retry"), {}, None),
     "manual_review": Playbook("medium", "portfolio_manager", 8, ("route_manually", "cancel_and_refund"),
                               {"cancel_and_refund": "refund"}, None),
 }
